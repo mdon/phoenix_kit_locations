@@ -1,6 +1,9 @@
 defmodule PhoenixKitLocationsTest do
   use ExUnit.Case
 
+  alias PhoenixKitLocations.Schemas.Location
+  alias PhoenixKitLocations.Schemas.LocationType
+
   describe "behaviour implementation" do
     test "implements PhoenixKit.Module" do
       behaviours =
@@ -63,8 +66,7 @@ defmodule PhoenixKitLocationsTest do
   describe "admin_tabs/0" do
     test "returns a non-empty list of Tab structs" do
       tabs = PhoenixKitLocations.admin_tabs()
-      assert is_list(tabs)
-      assert length(tabs) > 0
+      assert [_ | _] = tabs
     end
 
     test "main tab has required fields" do
@@ -141,8 +143,8 @@ defmodule PhoenixKitLocationsTest do
   describe "schemas" do
     test "Location changeset validates required name" do
       changeset =
-        PhoenixKitLocations.Schemas.Location.changeset(
-          %PhoenixKitLocations.Schemas.Location{},
+        Location.changeset(
+          %Location{},
           %{}
         )
 
@@ -152,8 +154,8 @@ defmodule PhoenixKitLocationsTest do
 
     test "Location changeset validates email format" do
       changeset =
-        PhoenixKitLocations.Schemas.Location.changeset(
-          %PhoenixKitLocations.Schemas.Location{},
+        Location.changeset(
+          %Location{},
           %{name: "Test", email: "notanemail"}
         )
 
@@ -163,8 +165,8 @@ defmodule PhoenixKitLocationsTest do
 
     test "Location changeset validates website format" do
       changeset =
-        PhoenixKitLocations.Schemas.Location.changeset(
-          %PhoenixKitLocations.Schemas.Location{},
+        Location.changeset(
+          %Location{},
           %{name: "Test", website: "notaurl"}
         )
 
@@ -174,8 +176,8 @@ defmodule PhoenixKitLocationsTest do
 
     test "Location changeset accepts valid data" do
       changeset =
-        PhoenixKitLocations.Schemas.Location.changeset(
-          %PhoenixKitLocations.Schemas.Location{},
+        Location.changeset(
+          %Location{},
           %{name: "HQ", email: "hq@example.com", website: "https://example.com", status: "active"}
         )
 
@@ -184,8 +186,8 @@ defmodule PhoenixKitLocationsTest do
 
     test "LocationType changeset validates required name" do
       changeset =
-        PhoenixKitLocations.Schemas.LocationType.changeset(
-          %PhoenixKitLocations.Schemas.LocationType{},
+        LocationType.changeset(
+          %LocationType{},
           %{}
         )
 
@@ -195,8 +197,8 @@ defmodule PhoenixKitLocationsTest do
 
     test "LocationType changeset accepts valid data" do
       changeset =
-        PhoenixKitLocations.Schemas.LocationType.changeset(
-          %PhoenixKitLocations.Schemas.LocationType{},
+        LocationType.changeset(
+          %LocationType{},
           %{name: "Showroom", status: "active"}
         )
 
@@ -205,8 +207,8 @@ defmodule PhoenixKitLocationsTest do
 
     test "Location changeset rejects invalid status" do
       changeset =
-        PhoenixKitLocations.Schemas.Location.changeset(
-          %PhoenixKitLocations.Schemas.Location{},
+        Location.changeset(
+          %Location{},
           %{name: "Test", status: "bogus"}
         )
 

@@ -247,26 +247,27 @@ defmodule PhoenixKitLocations.Locations do
       |> repo().delete_all()
 
       now = DateTime.utc_now() |> DateTime.truncate(:second)
-
-      Enum.each(type_uuids, fn type_uuid ->
-        case repo().insert(%LocationTypeAssignment{
-               location_uuid: location_uuid,
-               location_type_uuid: type_uuid,
-               inserted_at: now,
-               updated_at: now
-             }) do
-          {:ok, _} ->
-            :ok
-
-          {:error, changeset} ->
-            Logger.error(
-              "Failed to assign type #{type_uuid} to location #{location_uuid}: #{inspect(changeset.errors)}"
-            )
-
-            repo().rollback(:type_assignment_failed)
-        end
-      end)
+      Enum.each(type_uuids, &insert_type_assignment!(location_uuid, &1, now))
     end)
+  end
+
+  defp insert_type_assignment!(location_uuid, type_uuid, now) do
+    case repo().insert(%LocationTypeAssignment{
+           location_uuid: location_uuid,
+           location_type_uuid: type_uuid,
+           inserted_at: now,
+           updated_at: now
+         }) do
+      {:ok, _} ->
+        :ok
+
+      {:error, changeset} ->
+        Logger.error(
+          "Failed to assign type #{type_uuid} to location #{location_uuid}: #{inspect(changeset.errors)}"
+        )
+
+        repo().rollback(:type_assignment_failed)
+    end
   end
 
   @doc """

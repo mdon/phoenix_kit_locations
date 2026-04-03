@@ -47,33 +47,29 @@ defmodule PhoenixKitLocations.Web.LocationsLive do
   defp tab_title(:types), do: Gettext.gettext(PhoenixKitWeb.Gettext, "Location Types")
 
   defp load_data(socket, :index) do
-    try do
-      assign(socket, :locations, Locations.list_locations())
-    rescue
-      error ->
-        Logger.error("Failed to load locations: #{inspect(error)}")
+    assign(socket, :locations, Locations.list_locations())
+  rescue
+    error ->
+      Logger.error("Failed to load locations: #{inspect(error)}")
 
-        put_flash(
-          socket,
-          :error,
-          Gettext.gettext(PhoenixKitWeb.Gettext, "Failed to load locations.")
-        )
-    end
+      put_flash(
+        socket,
+        :error,
+        Gettext.gettext(PhoenixKitWeb.Gettext, "Failed to load locations.")
+      )
   end
 
   defp load_data(socket, :types) do
-    try do
-      assign(socket, :location_types, Locations.list_location_types())
-    rescue
-      error ->
-        Logger.error("Failed to load location types: #{inspect(error)}")
+    assign(socket, :location_types, Locations.list_location_types())
+  rescue
+    error ->
+      Logger.error("Failed to load location types: #{inspect(error)}")
 
-        put_flash(
-          socket,
-          :error,
-          Gettext.gettext(PhoenixKitWeb.Gettext, "Failed to load location types.")
-        )
-    end
+      put_flash(
+        socket,
+        :error,
+        Gettext.gettext(PhoenixKitWeb.Gettext, "Failed to load location types.")
+      )
   end
 
   # ── Event handlers ──────────────────────────────────────────────
@@ -378,7 +374,7 @@ defmodule PhoenixKitLocations.Web.LocationsLive do
   end
 
   defp type_names(%{location_types: types}) when is_list(types) and types != [] do
-    types |> Enum.map(& &1.name) |> Enum.join(", ")
+    Enum.map_join(types, ", ", & &1.name)
   end
 
   defp type_names(_), do: "—"

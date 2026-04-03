@@ -156,7 +156,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
 
     warning =
       if similar != [] do
-        names = similar |> Enum.map(& &1.name) |> Enum.join(", ")
+        names = Enum.map_join(similar, ", ", & &1.name)
         Gettext.gettext(PhoenixKitWeb.Gettext, "Similar address found at: %{names}", names: names)
       end
 
