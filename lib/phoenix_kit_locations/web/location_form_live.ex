@@ -32,69 +32,69 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   def mount(params, _session, socket) do
     action = socket.assigns.live_action
 
-    {location, changeset, linked_type_uuids} =
-      case action do
-        :new ->
-          l = %Location{}
-          {l, Locations.change_location(l), []}
+    case load_location(action, params) do
+      {:not_found, uuid} ->
+        Logger.warning("Location not found for edit: #{uuid}")
 
-        :edit ->
-          case Locations.get_location(params["uuid"]) do
-            nil ->
-              Logger.warning("Location not found for edit: #{params["uuid"]}")
-              {nil, nil, []}
+        {:ok,
+         socket
+         |> put_flash(:error, Gettext.gettext(PhoenixKitWeb.Gettext, "Location not found."))
+         |> push_navigate(to: Paths.index())}
 
-            l ->
-              linked =
-                try do
-                  Locations.linked_type_uuids(l.uuid)
-                rescue
-                  error ->
-                    Logger.error("Failed to load linked types for #{l.uuid}: #{inspect(error)}")
-                    []
-                end
-
-              {l, Locations.change_location(l), linked}
-          end
-      end
-
-    if is_nil(location) and action == :edit do
-      {:ok,
-       socket
-       |> put_flash(:error, Gettext.gettext(PhoenixKitWeb.Gettext, "Location not found."))
-       |> push_navigate(to: Paths.index())}
-    else
-      all_types =
-        try do
-          Locations.list_location_types(status: "active")
-        rescue
-          error ->
-            Logger.error("Failed to load location types: #{inspect(error)}")
-            []
-        end
-
-      features = (location && location.features) || %{}
-
-      {:ok,
-       socket
-       |> assign(
-         page_title:
-           if(action == :new,
-             do: Gettext.gettext(PhoenixKitWeb.Gettext, "New Location"),
-             else: Gettext.gettext(PhoenixKitWeb.Gettext, "Edit %{name}", name: location.name)
-           ),
-         action: action,
-         location: location,
-         changeset: changeset,
-         all_types: all_types,
-         linked_type_uuids: MapSet.new(linked_type_uuids),
-         features: features,
-         feature_keys: @feature_keys,
-         address_warning: nil
-       )
-       |> mount_multilang()}
+      {location, changeset, linked_type_uuids} ->
+        {:ok,
+         socket
+         |> assign(
+           page_title: page_title(action, location),
+           action: action,
+           location: location,
+           changeset: changeset,
+           all_types: safe_list_location_types(),
+           linked_type_uuids: MapSet.new(linked_type_uuids),
+           features: (location && location.features) || %{},
+           feature_keys: @feature_keys,
+           address_warning: nil
+         )
+         |> mount_multilang()}
     end
   end
+
+  defp load_location(:new, _params) do
+    location = %Location{}
+    {location, Locations.change_location(location), []}
+  end
+
+  defp load_location(:edit, params) do
+    case Locations.get_location(params["uuid"]) do
+      nil ->
+        {:not_found, params["uuid"]}
+
+      location ->
+        {location, Locations.change_location(location), safe_linked_type_uuids(location)}
+    end
+  end
+
+  defp safe_linked_type_uuids(location) do
+    Locations.linked_type_uuids(location.uuid)
+  rescue
+    error ->
+      Logger.error("Failed to load linked types for #{location.uuid}: #{inspect(error)}")
+      []
+  end
+
+  defp safe_list_location_types do
+    Locations.list_location_types(status: "active")
+  rescue
+    error ->
+      Logger.error("Failed to load location types: #{inspect(error)}")
+      []
+  end
+
+  defp page_title(:new, _location),
+    do: Gettext.gettext(PhoenixKitWeb.Gettext, "New Location")
+
+  defp page_title(:edit, location),
+    do: Gettext.gettext(PhoenixKitWeb.Gettext, "Edit %{name}", name: location.name)
 
   @impl true
   def handle_event("switch_language", %{"lang" => lang_code}, socket) do
