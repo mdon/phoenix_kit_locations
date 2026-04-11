@@ -69,7 +69,7 @@ This is a **PhoenixKit module** that implements the `PhoenixKit.Module` behaviou
   - `LocationsLive` — index page with Locations/Types tab switching
   - `LocationFormLive` — create/edit location with multilang tabs, address fields, feature checkboxes, type toggle badges, duplicate address warning
   - `LocationTypeFormLive` — create/edit type with multilang tabs
-- **Routes**: Admin routes auto-generated from `admin_tabs/0` — no route module needed (single-page pattern per tab)
+- **Routes**: Admin routes auto-generated from `admin_tabs/0` — no route module needed (single-page pattern per tab). Never hand-register these routes in the parent app's `router.ex`; see `phoenix_kit/guides/custom-admin-pages.md` for the authoritative reference
 - **Paths**: Centralized path helpers in `Paths` module — always use these instead of hardcoding URLs
 
 ### Multilang (Translatable Fields)
