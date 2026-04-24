@@ -58,15 +58,15 @@ alias PhoenixKitLocations.Locations
 # Locations
 Locations.list_locations()
 Locations.create_location(%{name: "HQ", city: "Berlin", country: "DE"})
-Locations.list_locations(status: :active, type_uuid: some_uuid)
+Locations.list_locations(status: "active", type_uuid: some_uuid)
 
 # Location types
 Locations.list_location_types()
 Locations.create_location_type(%{name: "Office"})
 
-# Type assignments
-Locations.sync_location_types(location, [type_uuid_1, type_uuid_2])
-Locations.has_type?(location, type_uuid)
+# Type assignments (take location_uuid, not the struct)
+Locations.sync_location_types(location.uuid, [type_uuid_1, type_uuid_2])
+Locations.has_type?(location.uuid, type_uuid)
 ```
 
 ### Location Features

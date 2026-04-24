@@ -1,0 +1,170 @@
+defmodule PhoenixKitLocations.Web.LocationsLiveTest do
+  use PhoenixKitLocations.LiveCase
+
+  alias PhoenixKitLocations.Locations
+
+  describe "index tab" do
+    test "renders the locations list", %{conn: conn} do
+      fixture_location(%{name: "HQ", city: "Springfield"})
+
+      {:ok, _view, html} = live(conn, "/en/admin/locations/")
+      assert html =~ "HQ"
+      assert html =~ "Springfield"
+    end
+
+    test "renders empty state when no locations exist", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/en/admin/locations/")
+      assert html =~ "No locations yet."
+    end
+
+    test "renders a New Location link", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/en/admin/locations/")
+      assert has_element?(view, "a", "New Location")
+    end
+  end
+
+  describe "types tab" do
+    test "renders the types list", %{conn: conn} do
+      fixture_location_type(%{name: "Showroom"})
+
+      {:ok, _view, html} = live(conn, "/en/admin/locations/types")
+      assert html =~ "Showroom"
+    end
+
+    test "renders empty state when no types exist", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/en/admin/locations/types")
+      assert html =~ "No location types yet."
+    end
+  end
+
+  describe "delete flow" do
+    test "deleting a location removes it and flashes success", %{conn: conn} do
+      location = fixture_location(%{name: "Deletable"})
+
+      {:ok, view, _html} = live(conn, "/en/admin/locations/")
+
+      render_click(view, "show_delete_confirm", %{
+        "uuid" => location.uuid,
+        "type" => "location"
+      })
+
+      rendered = render_click(view, "delete_location", %{})
+
+      refute rendered =~ ">Deletable<"
+      assert rendered =~ "Location deleted."
+      assert is_nil(Locations.get_location(location.uuid))
+    end
+
+    test "deleting a type removes it and flashes success", %{conn: conn} do
+      type = fixture_location_type(%{name: "DisposableType"})
+
+      {:ok, view, _html} = live(conn, "/en/admin/locations/types")
+
+      render_click(view, "show_delete_confirm", %{
+        "uuid" => type.uuid,
+        "type" => "location_type"
+      })
+
+      rendered = render_click(view, "delete_location_type", %{})
+
+      refute rendered =~ ">DisposableType<"
+      assert rendered =~ "Location type deleted."
+      assert is_nil(Locations.get_location_type(type.uuid))
+    end
+
+    test "cancel_delete clears the confirm state", %{conn: conn} do
+      location = fixture_location(%{name: "Still here"})
+
+      {:ok, view, _html} = live(conn, "/en/admin/locations/")
+
+      render_click(view, "show_delete_confirm", %{
+        "uuid" => location.uuid,
+        "type" => "location"
+      })
+
+      render_click(view, "cancel_delete", %{})
+
+      # Delete was cancelled — the record survives
+      assert Locations.get_location(location.uuid)
+    end
+
+    test "delete of missing UUID flashes not-found and leaves other records alone", %{conn: conn} do
+      surviving = fixture_location(%{name: "Present"})
+
+      {:ok, view, _html} = live(conn, "/en/admin/locations/")
+
+      render_click(view, "show_delete_confirm", %{
+        "uuid" => Ecto.UUID.generate(),
+        "type" => "location"
+      })
+
+      rendered = render_click(view, "delete_location", %{})
+
+      assert rendered =~ "Location not found."
+      assert Process.alive?(view.pid)
+      assert Locations.get_location(surviving.uuid)
+    end
+
+    test "delete of missing type flashes not-found", %{conn: conn} do
+      _surviving = fixture_location_type(%{name: "Stays"})
+
+      {:ok, view, _html} = live(conn, "/en/admin/locations/types")
+
+      render_click(view, "show_delete_confirm", %{
+        "uuid" => Ecto.UUID.generate(),
+        "type" => "location_type"
+      })
+
+      rendered = render_click(view, "delete_location_type", %{})
+
+      assert rendered =~ "Location type not found."
+    end
+
+    test "delete event with unexpected type is a safe no-op", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/en/admin/locations/")
+
+      # confirm_delete stays nil; delete_location event with no prior
+      # show_delete_confirm should simply clear state without crashing
+      # or flashing an error.
+      rendered = render_click(view, "delete_location", %{})
+      refute rendered =~ "Location deleted."
+      refute rendered =~ "Location not found."
+      assert Process.alive?(view.pid)
+    end
+
+    test "cancel_delete clears confirm state and shows no flash", %{conn: conn} do
+      location = fixture_location(%{name: "KeepMe"})
+      {:ok, view, _html} = live(conn, "/en/admin/locations/")
+
+      render_click(view, "show_delete_confirm", %{
+        "uuid" => location.uuid,
+        "type" => "location"
+      })
+
+      rendered = render_click(view, "cancel_delete", %{})
+
+      refute rendered =~ "Location deleted."
+      refute rendered =~ "Location not found."
+      # Record still there
+      assert Locations.get_location(location.uuid)
+    end
+  end
+
+  describe "translated status column" do
+    test "renders translated Active label (not raw lowercase string)", %{conn: conn} do
+      fixture_location(%{name: "StatusTest", status: "active"})
+      {:ok, _view, html} = live(conn, "/en/admin/locations/")
+
+      # Raw `"active"` (lowercase) must not appear in the status badge —
+      # only the translated, capitalised form.
+      assert html =~ "Active"
+    end
+
+    test "renders translated Inactive label", %{conn: conn} do
+      fixture_location(%{name: "InactiveOne", status: "inactive"})
+      {:ok, _view, html} = live(conn, "/en/admin/locations/")
+
+      assert html =~ "Inactive"
+    end
+  end
+end

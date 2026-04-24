@@ -45,12 +45,16 @@ defmodule PhoenixKitLocations do
 
   @impl PhoenixKit.Module
   def enable_system do
-    Settings.update_boolean_setting_with_module("locations_enabled", true, module_key())
+    result = Settings.update_boolean_setting_with_module("locations_enabled", true, module_key())
+    PhoenixKitLocations.Locations.log_module_toggle(:enabled)
+    result
   end
 
   @impl PhoenixKit.Module
   def disable_system do
-    Settings.update_boolean_setting_with_module("locations_enabled", false, module_key())
+    result = Settings.update_boolean_setting_with_module("locations_enabled", false, module_key())
+    PhoenixKitLocations.Locations.log_module_toggle(:disabled)
+    result
   end
 
   # ===========================================================================

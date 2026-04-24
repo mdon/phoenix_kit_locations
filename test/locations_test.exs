@@ -389,5 +389,142 @@ defmodule PhoenixKitLocations.LocationsTest do
       results = Locations.find_similar_addresses("123 Main St", "Springfield", "")
       assert length(results) == 1
     end
+
+    test "handles unicode input" do
+      create_location(%{name: "Café", address_line_1: "Rue de l'Étoile", city: "Paris"})
+
+      results = Locations.find_similar_addresses("Rue de l'Étoile", "Paris", "")
+      assert length(results) == 1
+    end
+  end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Validation edge cases
+  # ═══════════════════════════════════════════════════════════════════
+
+  describe "changeset validations" do
+    test "rejects unknown status values" do
+      {:error, cs} = Locations.create_location(%{name: "X", status: "bogus"})
+      assert errors_on(cs).status
+    end
+
+    test "enforces name length limit" do
+      {:error, cs} = Locations.create_location(%{name: String.duplicate("a", 300)})
+      assert errors_on(cs).name
+    end
+
+    test "enforces description length limit" do
+      {:error, cs} =
+        Locations.create_location(%{
+          name: "HQ",
+          description: String.duplicate("d", 2100)
+        })
+
+      assert errors_on(cs).description
+    end
+
+    test "empty email is accepted (optional field)" do
+      assert {:ok, _} = Locations.create_location(%{name: "HQ", email: ""})
+    end
+
+    test "empty website is accepted (optional field)" do
+      assert {:ok, _} = Locations.create_location(%{name: "HQ", website: ""})
+    end
+  end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Public API surface
+  # ═══════════════════════════════════════════════════════════════════
+
+  describe "get_location_by/2 allowlist" do
+    test "rejects fields outside the allowlist" do
+      create_location(%{name: "HQ"})
+
+      assert_raise FunctionClauseError, fn ->
+        Locations.get_location_by(:notes, "anything")
+      end
+    end
+  end
+
+  describe "sync_location_types/3 semantics" do
+    test "returns :unchanged when types didn't change" do
+      l = create_location()
+      t = create_location_type()
+
+      {:ok, :synced} = Locations.sync_location_types(l.uuid, [t.uuid])
+      assert {:ok, :unchanged} = Locations.sync_location_types(l.uuid, [t.uuid])
+    end
+
+    test "returns :synced when the set actually changes" do
+      l = create_location()
+      t1 = create_location_type(%{name: "A"})
+      t2 = create_location_type(%{name: "B"})
+
+      assert {:ok, :synced} = Locations.sync_location_types(l.uuid, [t1.uuid])
+      assert {:ok, :synced} = Locations.sync_location_types(l.uuid, [t1.uuid, t2.uuid])
+    end
+
+    test "sync with nonexistent type_uuid rolls back and preserves existing assignments" do
+      l = create_location()
+      t = create_location_type(%{name: "Real"})
+
+      # Establish a baseline assignment.
+      {:ok, :synced} = Locations.sync_location_types(l.uuid, [t.uuid])
+      assert Locations.linked_type_uuids(l.uuid) == [t.uuid]
+
+      bogus = Ecto.UUID.generate()
+
+      # The FK constraint raises `Ecto.ConstraintError` inside the
+      # transaction (the join-schema has no `foreign_key_constraint/2`
+      # declared, so Ecto can't translate the DB violation to a
+      # changeset error and re-raises). This is the intended behaviour
+      # for what is a programmer-error path: the UI never hands us
+      # nonexistent type_uuids.
+      assert_raise Ecto.ConstraintError, fn ->
+        Locations.sync_location_types(l.uuid, [t.uuid, bogus])
+      end
+
+      # Rollback verified: the original single assignment survives.
+      assert Locations.linked_type_uuids(l.uuid) == [t.uuid]
+    end
+
+    test "sync with empty list clears all assignments" do
+      l = create_location()
+      t1 = create_location_type(%{name: "A"})
+      t2 = create_location_type(%{name: "B"})
+
+      {:ok, :synced} = Locations.sync_location_types(l.uuid, [t1.uuid, t2.uuid])
+      assert length(Locations.linked_type_uuids(l.uuid)) == 2
+
+      assert {:ok, :synced} = Locations.sync_location_types(l.uuid, [])
+      assert Locations.linked_type_uuids(l.uuid) == []
+    end
+  end
+
+  describe "find_similar_addresses — safety" do
+    test "handles SQL metacharacters in input without crashing" do
+      # Parametrised queries mean these are harmless, but the function
+      # should still just return [] (no match).
+      create_location(%{name: "X", address_line_1: "123 Main St", city: "SF"})
+
+      assert [] = Locations.find_similar_addresses("'; DROP TABLE x; --", "SF", "")
+      assert [] = Locations.find_similar_addresses("%%%", "SF", "")
+      assert [] = Locations.find_similar_addresses("_", "SF", "")
+    end
+
+    test "limits to 5 results" do
+      # Create 6 locations sharing the same address so the limit fires.
+      for i <- 1..6 do
+        create_location(%{
+          name: "L#{i}",
+          address_line_1: "100 Same St",
+          city: "Limit City",
+          postal_code: "111"
+        })
+      end
+
+      results = Locations.find_similar_addresses("100 Same St", "Limit City", "111")
+      assert length(results) == 5
+    end
   end
 end
