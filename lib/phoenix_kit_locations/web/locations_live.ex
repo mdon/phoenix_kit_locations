@@ -105,6 +105,15 @@ defmodule PhoenixKitLocations.Web.LocationsLive do
     {:noreply, assign(socket, :confirm_delete, nil)}
   end
 
+  # Defensive catch-all for unmatched messages (e.g. future PubSub
+  # broadcasts, MultilangForm hook fall-throughs). Logs at :debug per
+  # the workspace sync precedent at AGENTS.md:678-680.
+  @impl true
+  def handle_info(msg, socket) do
+    Logger.debug("[LocationsLive] ignoring unrelated message: #{inspect(msg)}")
+    {:noreply, socket}
+  end
+
   defp do_delete_location(socket, uuid), do: do_delete_item(socket, :location, uuid)
 
   defp do_delete_location_type(socket, uuid), do: do_delete_item(socket, :location_type, uuid)

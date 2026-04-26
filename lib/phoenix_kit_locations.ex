@@ -41,6 +41,10 @@ defmodule PhoenixKitLocations do
     Settings.get_boolean_setting("locations_enabled", false)
   rescue
     _ -> false
+  catch
+    # Sandbox owner exits on test teardown — would surface as a 1-in-N
+    # flake otherwise. See workspace AGENTS.md:911 for the precedent.
+    :exit, _ -> false
   end
 
   @impl PhoenixKit.Module

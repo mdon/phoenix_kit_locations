@@ -300,3 +300,16 @@ PhoenixKit modules come in two shapes:
 - **Headless**: functions/API only, no UI — still gets auto-discovery, toggles, and permissions
 
 Both shapes implement `PhoenixKit.Module`. The difference is whether `admin_tabs/0` returns entries with `live_view:` bindings.
+
+## What This Module Does NOT Have
+
+Deliberate non-features — pinning these in writing prevents future scope creep and makes review-finding triage faster.
+
+- **No PubSub broadcasts or real-time sync.** Locations are admin-only reference data; no public-facing LiveViews subscribe to changes. If two admins edit the same record, last-write-wins. Adding broadcasts would mean a new `pubsub_topic/0`, mount-time subscribe, and a payload-minimal contract — defer until there's a real consumer.
+- **No soft-delete / restore.** Hard-delete only. Cascading FK deletes remove `phoenix_kit_location_type_assignments` rows when a location or type is deleted; the locations themselves don't survive a restore flow.
+- **No background jobs / Oban workers.** No cron'd reconciliation, no async geocoding, no batch import worker. CSV/XLSX import is intentionally out of scope (each location is hand-curated).
+- **No external HTTP calls.** No geocoding API, no map tile fetch, no reverse-DNS, no SSRF surface to harden.
+- **No public API routes.** All routes are gated behind `live_session :phoenix_kit_admin` and the `locations` permission. The context module is the only public API surface; no JSON endpoint, no REST, no GraphQL.
+- **No file uploads or attachments.** Locations don't carry photos, documents, or `featured_image`. The `Attachments` module from core is not wired up.
+- **No multi-step / wizard form.** A single `LocationFormLive` page with a two-card layout (public info + internal). No tabs beyond multilang.
+- **No address validation against a registry.** The `find_similar_addresses/4` helper detects exact-match duplicates within the local DB but does not validate against postal authorities or geocode.

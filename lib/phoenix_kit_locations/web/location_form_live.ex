@@ -204,6 +204,15 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     end
   end
 
+  # Defensive catch-all for unmatched messages — e.g. future PubSub
+  # broadcasts, multilang hook fall-throughs. Logs at :debug per the
+  # workspace sync precedent at AGENTS.md:678-680.
+  @impl true
+  def handle_info(msg, socket) do
+    Logger.debug("[LocationFormLive] ignoring unrelated message: #{inspect(msg)}")
+    {:noreply, socket}
+  end
+
   defp sync_types_and_redirect(socket, location_uuid, message) do
     type_uuids = MapSet.to_list(socket.assigns.linked_type_uuids)
 

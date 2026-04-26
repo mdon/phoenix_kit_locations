@@ -326,4 +326,15 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
       refute rendered =~ "Similar address found at"
     end
   end
+
+  describe "handle_info catch-all" do
+    test "ignores unrelated messages without crashing", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/en/admin/locations/new")
+
+      send(view.pid, :unknown_msg_from_another_module)
+      send(view.pid, {:something_we_dont_care_about, %{}})
+
+      assert is_binary(render(view))
+    end
+  end
 end

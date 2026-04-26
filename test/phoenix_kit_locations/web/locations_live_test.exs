@@ -150,6 +150,20 @@ defmodule PhoenixKitLocations.Web.LocationsLiveTest do
     end
   end
 
+  describe "handle_info catch-all" do
+    test "ignores unrelated messages without crashing", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/en/admin/locations/")
+
+      send(view.pid, :unknown_msg_from_another_module)
+      send(view.pid, {:something_we_dont_care_about, %{}, %{}})
+
+      # If the catch-all clause is missing, send/2 above plus the
+      # `render/1` round-trip would surface a `FunctionClauseError`.
+      # `render/1` returning a binary is the proof we want.
+      assert is_binary(render(view))
+    end
+  end
+
   describe "translated status column" do
     test "renders translated Active label (not raw lowercase string)", %{conn: conn} do
       fixture_location(%{name: "StatusTest", status: "active"})

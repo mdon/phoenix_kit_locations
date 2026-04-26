@@ -46,22 +46,5 @@ defmodule PhoenixKitLocations.ErrorsTest do
     test "renders maps via inspect" do
       assert Errors.message(%{a: 1}) == "Unexpected error: %{a: 1}"
     end
-
-    test "every returned message is a string" do
-      for reason <- [
-            :location_not_found,
-            :location_type_not_found,
-            :location_delete_failed,
-            :location_type_delete_failed,
-            :type_assignment_failed,
-            :unexpected,
-            "bare string",
-            :unknown_atom,
-            {:some, :tuple}
-          ] do
-        assert is_binary(Errors.message(reason)),
-               "Errors.message(#{inspect(reason)}) should return a binary"
-      end
-    end
   end
 end

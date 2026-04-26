@@ -69,6 +69,21 @@ Locations.sync_location_types(location.uuid, [type_uuid_1, type_uuid_2])
 Locations.has_type?(location.uuid, type_uuid)
 ```
 
+### Error Handling
+
+Non-changeset errors returned by `PhoenixKitLocations.Locations` are atoms (`:location_not_found`, `:type_assignment_failed`, …). At the UI boundary, LiveViews translate them via `PhoenixKitLocations.Errors.message/1`, which wraps each mapping in `gettext` so flashes render in the user's locale.
+
+```elixir
+case Locations.delete_location(loc, actor_uuid: user.uuid) do
+  {:ok, _} -> :ok
+  {:error, _changeset} -> {:error, PhoenixKitLocations.Errors.message(:location_delete_failed)}
+end
+```
+
+### Activity Logging
+
+Every mutating context function logs a business-level activity to `PhoenixKit.Activity` when an `actor_uuid:` opt is passed. Logging is fire-and-forget — failures (e.g. host hasn't run core's V90 migration) never crash the primary operation. The action format is `"resource.verb"`: `location.created`, `location.updated`, `location.deleted`, `location.types_synced`, `location_type.created`, etc.
+
 ### Location Features
 
 Locations support a set of boolean feature flags stored as a JSONB map:

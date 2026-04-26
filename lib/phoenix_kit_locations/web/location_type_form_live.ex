@@ -93,6 +93,15 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
     save_location_type(socket, socket.assigns.action, params)
   end
 
+  # Defensive catch-all for unmatched messages — e.g. future PubSub
+  # broadcasts, multilang hook fall-throughs. Logs at :debug per the
+  # workspace sync precedent at AGENTS.md:678-680.
+  @impl true
+  def handle_info(msg, socket) do
+    Logger.debug("[LocationTypeFormLive] ignoring unrelated message: #{inspect(msg)}")
+    {:noreply, socket}
+  end
+
   defp save_location_type(socket, :new, params) do
     case Locations.create_location_type(params, actor_opts(socket)) do
       {:ok, _location_type} ->
