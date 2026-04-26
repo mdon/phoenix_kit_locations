@@ -317,6 +317,13 @@ defmodule PhoenixKitLocations.Locations do
           {:ok, :synced}
 
         {:error, reason} ->
+          maybe_log_activity("location.types_synced", "location", location_uuid, opts, %{
+            "db_pending" => true,
+            "reason" => inspect(reason),
+            "types_from" => MapSet.to_list(before_set),
+            "types_to" => MapSet.to_list(after_set)
+          })
+
           {:error, reason}
       end
     end
@@ -375,6 +382,16 @@ defmodule PhoenixKitLocations.Locations do
           })
 
           ok
+
+        {:error, %Ecto.Changeset{} = changeset} = error ->
+          maybe_log_activity("location.type_added", "location", location_uuid, opts, %{
+            "db_pending" => true,
+            "type_uuid" => type_uuid,
+            "error_fields" =>
+              changeset.errors |> Enum.map(fn {field, _} -> to_string(field) end) |> Enum.uniq()
+          })
+
+          error
 
         error ->
           error
@@ -471,7 +488,11 @@ defmodule PhoenixKitLocations.Locations do
   # Activity logging helpers
   # ═══════════════════════════════════════════════════════════════════
 
-  # Pipe-step: logs on {:ok, struct}, passes {:error, changeset} through unchanged.
+  # Pipe-step: logs on {:ok, struct} with full metadata; on
+  # {:error, changeset} logs a `db_pending: true` audit row so the
+  # user-initiated action survives even when the primary write fails
+  # (e.g. unique-constraint violation, FK rollback). Passes the
+  # original tuple through unchanged.
   defp log_activity({:ok, %mod{} = record} = ok, action, resource_type, opts, metadata_fun)
        when is_function(metadata_fun, 1) do
     maybe_log_activity(
@@ -483,6 +504,24 @@ defmodule PhoenixKitLocations.Locations do
     )
 
     ok
+  end
+
+  defp log_activity(
+         {:error, %Ecto.Changeset{} = changeset} = err,
+         action,
+         resource_type,
+         opts,
+         _metadata_fun
+       ) do
+    maybe_log_activity(
+      action,
+      resource_type,
+      changeset_resource_uuid(changeset),
+      opts,
+      changeset_error_metadata(changeset)
+    )
+
+    err
   end
 
   defp log_activity({:error, _} = err, _action, _resource_type, _opts, _metadata_fun), do: err
@@ -518,6 +557,21 @@ defmodule PhoenixKitLocations.Locations do
   end
 
   defp struct_uuid(record, _mod), do: Map.get(record, :uuid)
+
+  # On {:error, changeset} the record may not have a UUID yet (insert
+  # failed) — fall back to the changeset's data UUID, which exists
+  # for updates and is `nil` for inserts.
+  defp changeset_resource_uuid(%Ecto.Changeset{data: data}), do: Map.get(data, :uuid)
+
+  # PII-safe changeset metadata: invalid field names + a db_pending
+  # marker. Never includes the rejected values themselves — only the
+  # field set + which fields had errors.
+  defp changeset_error_metadata(%Ecto.Changeset{errors: errors}) do
+    %{
+      "db_pending" => true,
+      "error_fields" => errors |> Enum.map(fn {field, _} -> to_string(field) end) |> Enum.uniq()
+    }
+  end
 
   defp location_metadata(%Location{} = l) do
     %{

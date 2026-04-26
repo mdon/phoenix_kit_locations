@@ -53,9 +53,17 @@ defmodule PhoenixKitLocations.ActivityLoggingTest do
       )
     end
 
-    test "failed create does not log" do
+    test "failed create logs location_type.created with db_pending: true" do
       {:error, _cs} = Locations.create_location_type(%{}, actor_uuid: @actor)
-      refute_activity_logged("location_type.created", actor_uuid: @actor)
+
+      row =
+        assert_activity_logged("location_type.created",
+          actor_uuid: @actor,
+          metadata_has: %{"db_pending" => true}
+        )
+
+      assert "name" in row.metadata["error_fields"]
+      assert row.resource_type == "location_type"
     end
   end
 
@@ -102,9 +110,17 @@ defmodule PhoenixKitLocations.ActivityLoggingTest do
       )
     end
 
-    test "failed create does not log" do
+    test "failed create logs location.created with db_pending: true" do
       {:error, _cs} = Locations.create_location(%{}, actor_uuid: @actor)
-      refute_activity_logged("location.created", actor_uuid: @actor)
+
+      row =
+        assert_activity_logged("location.created",
+          actor_uuid: @actor,
+          metadata_has: %{"db_pending" => true}
+        )
+
+      assert "name" in row.metadata["error_fields"]
+      assert row.resource_type == "location"
     end
 
     test "metadata is PII-audited (no email, phone, notes)" do

@@ -12,7 +12,11 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
       assert html =~ "Features &amp; Amenities"
     end
 
-    test "submitting the form creates a location and redirects", %{conn: conn} do
+    test "submitting the form creates a location, redirects, and logs with actor_uuid",
+         %{conn: conn} do
+      scope = fake_scope()
+      conn = put_test_scope(conn, scope)
+
       {:ok, view, _html} = live(conn, "/en/admin/locations/new")
 
       {:error, {:live_redirect, %{to: to}}} =
@@ -21,7 +25,13 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
         |> render_submit()
 
       assert to == "/en/admin/locations"
-      assert %{name: "Fresh HQ", city: "Berlin"} = Locations.get_location_by(:name, "Fresh HQ")
+      created = Locations.get_location_by(:name, "Fresh HQ")
+      assert %{name: "Fresh HQ", city: "Berlin"} = created
+
+      assert_activity_logged("location.created",
+        resource_uuid: created.uuid,
+        actor_uuid: scope.user.uuid
+      )
     end
 
     test "submit with missing name shows validation error", %{conn: conn} do
@@ -59,8 +69,11 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
       assert html =~ "value=\"Oldtown\""
     end
 
-    test "updating fields persists changes and redirects", %{conn: conn} do
+    test "updating fields persists changes, redirects, and logs with actor_uuid",
+         %{conn: conn} do
       location = fixture_location(%{name: "Original", city: "Oldtown"})
+      scope = fake_scope()
+      conn = put_test_scope(conn, scope)
 
       {:ok, view, _html} = live(conn, "/en/admin/locations/#{location.uuid}/edit")
 
@@ -73,6 +86,11 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
 
       assert to == "/en/admin/locations"
       assert %{city: "Newcity"} = Locations.get_location(location.uuid)
+
+      assert_activity_logged("location.updated",
+        resource_uuid: location.uuid,
+        actor_uuid: scope.user.uuid
+      )
     end
 
     test "edit with nonexistent UUID redirects to index with flash", %{conn: conn} do

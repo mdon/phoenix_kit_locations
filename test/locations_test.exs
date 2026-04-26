@@ -430,6 +430,64 @@ defmodule PhoenixKitLocations.LocationsTest do
     test "empty website is accepted (optional field)" do
       assert {:ok, _} = Locations.create_location(%{name: "HQ", website: ""})
     end
+
+    test "preserves Unicode round-trip in name + city + notes" do
+      attrs = %{
+        name: "東京本部 — Tōkyō HQ 🗼",
+        city: "東京",
+        country: "日本",
+        public_notes: "ベルが壊れています — please knock loudly. Звонок не работает."
+      }
+
+      assert {:ok, loc} = Locations.create_location(attrs)
+      reloaded = Locations.get_location(loc.uuid)
+
+      assert reloaded.name == attrs.name
+      assert reloaded.city == attrs.city
+      assert reloaded.country == attrs.country
+      assert reloaded.public_notes == attrs.public_notes
+    end
+
+    test "accepts SQL-metacharacter strings without crashing or escaping" do
+      # Single quotes, semicolons, comment markers — Ecto's parameterised
+      # queries treat these as data, not SQL syntax. Round-trip should
+      # preserve byte-for-byte.
+      payloads = [
+        "Robert'); DROP TABLE phoenix_kit_locations; --",
+        "Bob \" OR 1=1 --",
+        "<script>alert('x')</script>",
+        "\\u0000 NUL",
+        "newline\nin\tname"
+      ]
+
+      for payload <- payloads do
+        assert {:ok, loc} = Locations.create_location(%{name: payload})
+        assert Locations.get_location(loc.uuid).name == payload
+      end
+
+      assert Locations.count_locations() >= length(payloads)
+    end
+
+    test "name >255 chars rejected with explicit length error" do
+      {:error, cs} = Locations.create_location(%{name: String.duplicate("a", 256)})
+
+      assert {:name, {_, [count: 255, validation: :length, kind: :max, type: :string]}} =
+               Enum.find(cs.errors, fn {field, _} -> field == :name end)
+    end
+
+    test "phone >50 chars rejected" do
+      {:error, cs} =
+        Locations.create_location(%{name: "X", phone: String.duplicate("9", 51)})
+
+      assert errors_on(cs).phone
+    end
+
+    test "very long postal_code rejected (>20)" do
+      {:error, cs} =
+        Locations.create_location(%{name: "X", postal_code: String.duplicate("0", 21)})
+
+      assert errors_on(cs).postal_code
+    end
   end
 
   # ═══════════════════════════════════════════════════════════════════

@@ -38,8 +38,11 @@ defmodule PhoenixKitLocations.Web.LocationsLiveTest do
   end
 
   describe "delete flow" do
-    test "deleting a location removes it and flashes success", %{conn: conn} do
+    test "deleting a location removes it, flashes success, and logs with actor_uuid",
+         %{conn: conn} do
       location = fixture_location(%{name: "Deletable"})
+      scope = fake_scope()
+      conn = put_test_scope(conn, scope)
 
       {:ok, view, _html} = live(conn, "/en/admin/locations/")
 
@@ -53,10 +56,22 @@ defmodule PhoenixKitLocations.Web.LocationsLiveTest do
       refute rendered =~ ">Deletable<"
       assert rendered =~ "Location deleted."
       assert is_nil(Locations.get_location(location.uuid))
+
+      # Pinning that the LV threaded actor_opts/1 through the delete
+      # call — without scope-injection this would silently log
+      # actor_uuid: nil and the test would still pass against just
+      # resource_uuid.
+      assert_activity_logged("location.deleted",
+        resource_uuid: location.uuid,
+        actor_uuid: scope.user.uuid
+      )
     end
 
-    test "deleting a type removes it and flashes success", %{conn: conn} do
+    test "deleting a type removes it, flashes success, and logs with actor_uuid",
+         %{conn: conn} do
       type = fixture_location_type(%{name: "DisposableType"})
+      scope = fake_scope()
+      conn = put_test_scope(conn, scope)
 
       {:ok, view, _html} = live(conn, "/en/admin/locations/types")
 
@@ -70,6 +85,11 @@ defmodule PhoenixKitLocations.Web.LocationsLiveTest do
       refute rendered =~ ">DisposableType<"
       assert rendered =~ "Location type deleted."
       assert is_nil(Locations.get_location_type(type.uuid))
+
+      assert_activity_logged("location_type.deleted",
+        resource_uuid: type.uuid,
+        actor_uuid: scope.user.uuid
+      )
     end
 
     test "cancel_delete clears the confirm state", %{conn: conn} do

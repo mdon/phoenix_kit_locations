@@ -25,7 +25,9 @@ defmodule PhoenixKitLocations.Test.Router do
   scope "/en/admin/locations", PhoenixKitLocations.Web do
     pipe_through(:browser)
 
-    live_session :locations_test, layout: {PhoenixKitLocations.Test.Layouts, :app} do
+    live_session :locations_test,
+      layout: {PhoenixKitLocations.Test.Layouts, :app},
+      on_mount: {PhoenixKitLocations.Test.Hooks, :assign_scope} do
       # Locations + Types tabs share a single LiveView with two actions.
       live("/", LocationsLive, :index)
       live("/types", LocationsLive, :types)

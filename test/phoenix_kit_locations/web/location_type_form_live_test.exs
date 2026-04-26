@@ -9,7 +9,11 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLiveTest do
       assert html =~ "New Location Type"
     end
 
-    test "submitting the form creates a type and redirects", %{conn: conn} do
+    test "submitting the form creates a type, redirects, and logs with actor_uuid",
+         %{conn: conn} do
+      scope = fake_scope()
+      conn = put_test_scope(conn, scope)
+
       {:ok, view, _html} = live(conn, "/en/admin/locations/types/new")
 
       {:error, {:live_redirect, %{to: to}}} =
@@ -18,7 +22,13 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLiveTest do
         |> render_submit()
 
       assert to == "/en/admin/locations/types"
-      assert Locations.get_location_type_by_name("Warehouse")
+      created = Locations.get_location_type_by_name("Warehouse")
+      assert created
+
+      assert_activity_logged("location_type.created",
+        resource_uuid: created.uuid,
+        actor_uuid: scope.user.uuid
+      )
     end
 
     test "submit with blank name shows validation error", %{conn: conn} do

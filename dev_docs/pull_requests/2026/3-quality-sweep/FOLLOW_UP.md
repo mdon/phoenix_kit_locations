@@ -93,33 +93,103 @@ sweep didn't have prompts for.
   `render(view)` returns a binary. If the catch-all clause regresses
   to a `FunctionClauseError`, the round-trip fails.
 
-## Skipped / surfaced (with rationale)
+## Skipped / surfaced from Batch 2 (closed in Batch 3)
 
-- **Activity logging on `:error` branch.** The C12 #2 prompt
-  (AGENTS.md:644-647) calls for every CRUD context fn to log on
-  `:error` too with a `db_pending: true` flag. The original sweep
-  deliberately scoped to `:ok`-only, and the AI re-validation kept the
-  same scope. Surfaced here for completeness; not fixed in Batch 2.
-  Adding `:error`-branch logging is a one-pattern refactor across the
-  10 mutating fns in `locations.ex` — a "fix everything" pass would
-  close it.
-
-- **LV-level `actor_uuid:` pinning in delete tests.** C12 #2 calls
-  for delete tests to assert `assert_activity_logged(action,
-  actor_uuid: ...)` rather than just resource-uuid match. Pinning
-  this requires scope-injection test infra (`hooks.ex` +
-  `LiveCase.put_test_scope/2` + `fake_scope/1` mirroring
-  `phoenix_kit_hello_world/test/support/`). The
-  `actor_opts/1` threading is already verified at the context layer
-  by `test/activity_logging_test.exs` (every CRUD test passes
-  `actor_uuid: @actor` and `assert_activity_logged` pins it). The AI
-  module's batch 2 also did NOT add scope hooks. Surfaced as a future
-  test-depth improvement, not blocking.
-
+- ~~**Activity logging on `:error` branch.**~~ Closed in Batch 3a — see below.
+- ~~**LV-level `actor_uuid:` pinning in delete tests.**~~ Closed in Batch 3b — see below.
 - **Pre-existing log spam from core's `Settings.get_boolean_setting/2`.**
-  See "Test infrastructure (C7)" above and AGENTS.md:1075-1076.
+  Still open. See "Test infrastructure (C7)" above and AGENTS.md:1075-1076.
   Suppressing the upstream Logger.error lives in core, not this
   module.
+
+## Batch 3 — fix-everything pass 2026-04-26
+
+Max authorised closing every Batch-2 surfaced item. Two gaps remained
+after Batch 2; both are closed here, plus a small edge-case-test
+expansion that exercises new code paths.
+
+### Batch 3a — `:error`-branch activity logging
+
+- `locations.ex` `log_activity/5` pipe step gained an `{:error,
+  %Ecto.Changeset{}}` clause that logs the same action with a
+  PII-safe `%{db_pending: true, error_fields: [...]}` metadata map
+  before passing the tuple through unchanged. The audit trail now
+  captures the user-initiated action even when the primary write
+  fails (unique-constraint violation, FK rollback, etc.).
+- `sync_location_types/3` and `add_location_type/3` use the
+  non-pipe `maybe_log_activity/5` directly — both got matching
+  `:error`-branch calls so the pattern is uniform across all
+  mutations.
+- New helpers: `changeset_resource_uuid/1` (falls back to
+  `changeset.data.uuid`, which is `nil` for inserts and the
+  pre-existing UUID for updates), `changeset_error_metadata/1`
+  (extracts the field names that errored — never the rejected
+  values themselves).
+- Two pre-existing "failed create does not log" tests in
+  `activity_logging_test.exs` were inverted to "failed create logs
+  with `db_pending: true`" — these now pin both the new behaviour
+  AND the PII safety (assertions on `error_fields` membership, no
+  raw value leakage).
+
+### Batch 3b — Scope injection + LV `actor_uuid` pins
+
+- New `test/support/hooks.ex` (`PhoenixKitLocations.Test.Hooks`)
+  with an `:assign_scope` `on_mount` callback mirroring
+  `phoenix_kit_hello_world/test/support/hooks.ex`. Reads
+  `"phoenix_kit_test_scope"` from the test session and assigns
+  `:phoenix_kit_current_scope` + `:phoenix_kit_current_user` onto
+  socket assigns at LV mount.
+- `test_router.ex` `live_session :locations_test` now passes
+  `on_mount: {PhoenixKitLocations.Test.Hooks, :assign_scope}`.
+- `LiveCase` gained `fake_scope/1` (returns a real
+  `PhoenixKit.Users.Auth.Scope` struct — `cached_roles` is a list
+  of role-name strings per AGENTS.md:1175 even though locations
+  doesn't call `Scope.admin?/1`) and `put_test_scope/2` (plugs the
+  scope into the conn session).
+- Every delete test in `locations_live_test.exs` and every
+  successful-save test in `location_form_live_test.exs` /
+  `location_type_form_live_test.exs` now sets a fake scope and
+  asserts `assert_activity_logged(action, resource_uuid: ...,
+  actor_uuid: scope.user.uuid)`. Previously these tests would have
+  passed silently if the LV dropped `actor_opts/1` from the call.
+
+### Batch 3c — Edge-case tests in `locations_test.exs`
+
+Five new tests in the `changeset validations` describe block:
+
+- **Unicode round-trip** — name (`東京本部 — Tōkyō HQ 🗼`), city
+  (`東京`), country (`日本`), public_notes (mixed Japanese + Cyrillic
+  + Latin) round-trip byte-for-byte through create + reload.
+- **SQL metacharacters** — five payloads (`'); DROP TABLE …`, `\"
+  OR 1=1`, `<script>` tag, `\\u0000 NUL`, embedded newlines/tabs)
+  insert and round-trip without crashing or escaping. Pins
+  Ecto's parameterised-query behaviour at the integration level.
+- **Name >255 chars** — explicit length-error structure assert
+  (`{:length, kind: :max, type: :string, count: 255}`), not just
+  `errors_on(cs).name`.
+- **Phone >50 chars** — length validation rejects.
+- **Postal code >20 chars** — length validation rejects.
+
+## Files touched (Batch 3)
+
+| File | Change |
+|------|--------|
+| `lib/phoenix_kit_locations/locations.ex` | `:error`-branch logging on log_activity + sync_location_types + add_location_type; new `changeset_error_metadata/1` + `changeset_resource_uuid/1` helpers |
+| `test/support/hooks.ex` (new) | `:assign_scope` on_mount callback |
+| `test/support/test_router.ex` | wire on_mount into live_session |
+| `test/test_helper.exs` | load hooks.ex before test_router |
+| `test/support/live_case.ex` | `fake_scope/1` + `put_test_scope/2` |
+| `test/activity_logging_test.exs` | failed-create tests inverted to `db_pending: true` pins |
+| `test/phoenix_kit_locations/web/locations_live_test.exs` | actor_uuid pins on both delete tests |
+| `test/phoenix_kit_locations/web/location_form_live_test.exs` | actor_uuid pins on create + update |
+| `test/phoenix_kit_locations/web/location_type_form_live_test.exs` | actor_uuid pin on create |
+| `test/locations_test.exs` | +5 edge-case tests (Unicode, SQL metachars, length limits) |
+
+## Verification (Batch 3)
+
+- `mix precommit` clean (compile + format + credo --strict + dialyzer)
+- **167 tests, 0 failures** (up from 162)
+- 10/10 stable runs
 
 ## Files touched
 

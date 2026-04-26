@@ -9,6 +9,7 @@ support_dir = Path.expand("support", __DIR__)
 [
   "test_repo.ex",
   "test_layouts.ex",
+  "hooks.ex",
   "test_router.ex",
   "test_endpoint.ex",
   "activity_log_assertions.ex",
