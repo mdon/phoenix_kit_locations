@@ -1,6 +1,6 @@
 # PR #5 Review — Fix `check_address` blur crash that wiped every typed field
 
-**Reviewer:** Pincer 🦀 | **Date:** 2026-05-25 | **Verdict:** Approve (already merged) — no required fixes, two optional follow-ups
+**Reviewer:** Claude | **Date:** 2026-05-25 | **Verdict:** Approve (already merged) — no required fixes, two optional follow-ups
 
 ## Summary
 
@@ -78,9 +78,12 @@ back.
 
 ---
 
-## Optional follow-ups (not blocking, not introduced by this PR)
+## Findings
 
-### Redundant per-blur queries — low value
+No `BUG` findings — the PR removes one. The items below are
+improvements, neither blocking nor introduced by this PR.
+
+### `IMPROVEMENT - MEDIUM` — redundant per-blur queries
 
 The handler now ignores its params (`_params`) and reads all three
 address fields from the changeset, so blurring **any** of the three
@@ -91,7 +94,7 @@ already in that template, a single `phx-blur` (e.g. only on
 `postal_code`) would do the same job — but it's not worth a dedicated
 change.
 
-### DB query in `mount/3` — pre-existing, separate ticket
+### `IMPROVEMENT - HIGH` — DB query in `mount/3` (pre-existing, separate ticket)
 
 `mount/3` calls `load_location/2`, which queries the DB for `:edit`
 (`:41-68`). `mount/3` runs twice (HTTP render + WebSocket connect), so
