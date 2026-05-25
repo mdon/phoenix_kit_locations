@@ -151,15 +151,24 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     {:noreply, assign(socket, :features, features)}
   end
 
-  def handle_event("check_address", %{"location" => params}, socket) do
+  # `phx-blur` payloads carry only event metadata (`%{"key" => ..., "value" => ...}`),
+  # not the form's serialized params — Phoenix LV's `phx-change` is the only event
+  # that serializes the form. Matching `%{"location" => params}` here crashed the LV
+  # on every address-field blur with a FunctionClauseError, which auto-reconnected
+  # the form and wiped every in-progress field. Read from the changeset instead,
+  # which `phx-change="validate"` keeps up-to-date with each keystroke (no debounce
+  # on `<.input>`).
+  def handle_event("check_address", _params, socket) do
+    changeset = socket.assigns.changeset
+
     exclude_uuid =
       if socket.assigns.action == :edit, do: socket.assigns.location.uuid, else: nil
 
     similar =
       Locations.find_similar_addresses(
-        params["address_line_1"],
-        params["city"],
-        params["postal_code"],
+        Ecto.Changeset.get_field(changeset, :address_line_1),
+        Ecto.Changeset.get_field(changeset, :city),
+        Ecto.Changeset.get_field(changeset, :postal_code),
         exclude_uuid
       )
 
