@@ -257,6 +257,29 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
   end
 
   describe "check_address / duplicate warning" do
+    # Phoenix LV's `phx-blur` payload is `%{"key" => ..., "value" => ...}` —
+    # NOT the form's serialized params. The handler reads from the changeset
+    # (kept fresh by `phx-change="validate"`), so these tests seed the
+    # changeset with a `render_change` first, then fire blur the same way a
+    # real browser would.
+    defp seed_address(view, address_line_1, city, postal_code) do
+      view
+      |> form("form",
+        location: %{
+          "address_line_1" => address_line_1,
+          "city" => city,
+          "postal_code" => postal_code
+        }
+      )
+      |> render_change()
+    end
+
+    defp blur_address_line_1(view) do
+      view
+      |> element(~s|input[name="location[address_line_1]"]|)
+      |> render_blur()
+    end
+
     test "fires warning when a matching address exists", %{conn: conn} do
       _existing =
         fixture_location(%{
@@ -268,14 +291,8 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
 
       {:ok, view, _html} = live(conn, "/en/admin/locations/new")
 
-      rendered =
-        render_hook(view, "check_address", %{
-          "location" => %{
-            "address_line_1" => "123 Main St",
-            "city" => "Springfield",
-            "postal_code" => "62701"
-          }
-        })
+      seed_address(view, "123 Main St", "Springfield", "62701")
+      rendered = blur_address_line_1(view)
 
       assert rendered =~ "Similar address found at: Existing HQ"
     end
@@ -283,14 +300,8 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
     test "no warning when no match", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/en/admin/locations/new")
 
-      rendered =
-        render_hook(view, "check_address", %{
-          "location" => %{
-            "address_line_1" => "999 Nowhere Rd",
-            "city" => "Anywhere",
-            "postal_code" => "00000"
-          }
-        })
+      seed_address(view, "999 Nowhere Rd", "Anywhere", "00000")
+      rendered = blur_address_line_1(view)
 
       refute rendered =~ "Similar address found at"
     end
@@ -306,10 +317,8 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
 
       {:ok, view, _html} = live(conn, "/en/admin/locations/new")
 
-      warned =
-        render_hook(view, "check_address", %{
-          "location" => %{"address_line_1" => "12 Oak St", "city" => "C", "postal_code" => "99"}
-        })
+      seed_address(view, "12 Oak St", "C", "99")
+      warned = blur_address_line_1(view)
 
       assert warned =~ "Similar address found at"
 
@@ -332,16 +341,40 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
 
       {:ok, view, _html} = live(conn, "/en/admin/locations/#{location.uuid}/edit")
 
-      rendered =
-        render_hook(view, "check_address", %{
-          "location" => %{
-            "address_line_1" => "77 Only St",
-            "city" => "Onlytown",
-            "postal_code" => "55"
-          }
-        })
+      # On :edit the loaded record already populates the changeset's data —
+      # no need to re-seed via render_change before blur.
+      rendered = blur_address_line_1(view)
 
       refute rendered =~ "Similar address found at"
+    end
+
+    # Regression test for the bug the boss reported: "fill one field, click
+    # into another, the first one clears." Root cause: `phx-blur` fires
+    # `check_address` with payload `%{"key" => nil, "value" => "..."}`, but
+    # the old handler pattern-matched on `%{"location" => params}`. With no
+    # matching clause, the LV process crashed with FunctionClauseError,
+    # auto-reconnected, and remounted the form — wiping every typed field.
+    test "blur on an address field does not crash the LV and preserves typed fields",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/en/admin/locations/new")
+
+      # User types a name and city, then blurs the address field. With the
+      # old handler this triggered a FunctionClauseError → LV crash → reconnect.
+      seed_address(view, "1 Reproduce Ave", "Reprocity", "00001")
+
+      view
+      |> form("form",
+        location: %{"name" => "RegressionHQ", "city" => "Reprocity"}
+      )
+      |> render_change()
+
+      rendered = blur_address_line_1(view)
+
+      assert Process.alive?(view.pid), "blur on address_line_1 must not crash the LV"
+      # Typed fields survive the blur (re-render uses up-to-date changeset).
+      assert rendered =~ ~s(value="RegressionHQ")
+      assert rendered =~ ~s(value="1 Reproduce Ave")
+      assert rendered =~ ~s(value="Reprocity")
     end
   end
 
