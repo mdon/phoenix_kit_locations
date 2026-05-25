@@ -1,7 +1,7 @@
 defmodule PhoenixKitLocations.MixProject do
   use Mix.Project
 
-  @version "0.1.2"
+  @version "0.1.3"
   @source_url "https://github.com/BeamLabEU/phoenix_kit_locations"
 
   def project do
@@ -36,7 +36,11 @@ defmodule PhoenixKitLocations.MixProject do
     [
       quality: ["format", "credo --strict", "dialyzer"],
       "quality.ci": ["format --check-formatted", "credo --strict", "dialyzer"],
-      precommit: ["compile --force --warnings-as-errors", "deps.unlock --check-unused", "quality.ci"],
+      precommit: [
+        "compile --force --warnings-as-errors",
+        "deps.unlock --check-unused",
+        "quality.ci"
+      ],
       "test.setup": [
         "ecto.create --quiet -r PhoenixKitLocations.Test.Repo"
       ],

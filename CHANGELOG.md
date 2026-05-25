@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3 - 2026-05-25
+
+### Fixed
+- `check_address` no longer crashes the location form's LiveView on address-field blur. `phx-blur` delivers `%{"key", "value"}`, not the form's serialized params, so the old `%{"location" => params}` clause never matched and every blur raised `FunctionClauseError` — taking down the LiveView, forcing a reconnect, and wiping every in-progress field. The handler now reads the address from the changeset (kept current by `phx-change="validate"`).
+
+### Quality
+- `check_address` tests now drive the real `phx-blur` event via `render_blur` on the input element instead of a hand-crafted `render_hook` payload, plus a regression test asserting the LiveView survives a blur and preserves typed fields.
+
 ## 0.1.2 - 2026-04-29
 
 ### Added
