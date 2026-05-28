@@ -51,19 +51,10 @@ repo_available =
     try do
       {:ok, _} = PhoenixKitLocations.Test.Repo.start_link()
 
-      # Build the schema directly from core's versioned migrations — same
-      # call the host app makes in production. The locations tables come
-      # from core's V90; `phoenix_kit_settings` (V03), `phoenix_kit_activities`
-      # (V90), and the `uuid-ossp` / `pgcrypto` extensions + `uuid_generate_v7()`
-      # function (V40) are also owned by core. No module-side DDL.
-      #
-      # `ensure_current/2` (core 1.7.105+ / phoenix_kit#515) re-applies
-      # any newly-shipped Vxxx migrations on every boot by passing a
-      # fresh wall-clock version to Ecto.Migrator. Replaces the
-      # hand-rolled `test/support/postgres/migrations/` shim that
-      # duplicated core's DDL — schema drift between test and prod is
-      # impossible by construction. See `dev_docs/migration_cleanup.md`
-      # for the full story.
+      # Use core's `ensure_current/2` so the test schema tracks whatever
+      # V-migrations core ships; no module-side DDL. See `PhoenixKit.Migration`
+      # for re-runnable semantics. Accumulates rows in `schema_migrations`
+      # between resets — cleared by `mix test.reset`.
       PhoenixKit.Migration.ensure_current(PhoenixKitLocations.Test.Repo, log: false)
 
       Ecto.Adapters.SQL.Sandbox.mode(PhoenixKitLocations.Test.Repo, :manual)

@@ -41,6 +41,9 @@ defmodule PhoenixKitLocations.MixProject do
         "deps.unlock --check-unused",
         "quality.ci"
       ],
+      # Schema is applied by `test_helper.exs` on every `mix test` run
+      # via `PhoenixKit.Migration.ensure_current/2` — no `ecto.migrate`
+      # step here.
       "test.setup": [
         "ecto.create --quiet -r PhoenixKitLocations.Test.Repo"
       ],
@@ -53,7 +56,10 @@ defmodule PhoenixKitLocations.MixProject do
 
   defp deps do
     [
-      {:phoenix_kit, "~> 1.7"},
+      # 1.7.105 introduced `PhoenixKit.Migration.ensure_current/2` —
+      # consumed by `test/test_helper.exs`. Older cores miss the
+      # function and `mix test` would crash at boot.
+      {:phoenix_kit, "~> 1.7.105"},
       {:phoenix_live_view, "~> 1.1"},
       {:ex_doc, "~> 0.39", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
