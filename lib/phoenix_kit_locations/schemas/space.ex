@@ -35,7 +35,13 @@ defmodule PhoenixKitLocations.Schemas.Space do
   @primary_key {:uuid, UUIDv7, autogenerate: true}
   @foreign_key_type UUIDv7
 
-  @kinds ~w(floor room hall suite section zone aisle shelf corner)
+  # V1 of the Spaces UI only exposes two kinds: floor (top-level
+  # subdivision of a location) and room (children of a floor). The DB
+  # CHECK constraint (V122 in core) intentionally still allows a wider
+  # set so we can grow into it without an immediate migration when
+  # halls/suites/aisles/etc. become useful again — narrowing happens
+  # in app-layer validation here.
+  @kinds ~w(floor room)
   @statuses ~w(active inactive)
 
   schema "phoenix_kit_location_spaces" do

@@ -90,7 +90,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   # applied on the host) leaves the Spaces card empty rather than
   # crashing the whole form.
   defp assign_spaces_state(socket, :new, _location) do
-    assign(socket, space_drafts: [], active_space_id: nil)
+    assign(socket, space_drafts: [], active_floor_id: nil, active_room_id: nil)
   end
 
   defp assign_spaces_state(socket, :edit, location) do
@@ -99,13 +99,17 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> safe_list_spaces()
       |> Enum.map(&persisted_draft/1)
 
-    active =
-      case drafts do
-        [] -> nil
-        [first | _] -> first.id
+    active_floor =
+      case Enum.find(drafts, &(&1.space.kind == "floor")) do
+        nil -> nil
+        d -> d.id
       end
 
-    assign(socket, space_drafts: drafts, active_space_id: active)
+    assign(socket,
+      space_drafts: drafts,
+      active_floor_id: active_floor,
+      active_room_id: nil
+    )
   end
 
   defp safe_list_spaces(location_uuid) do
@@ -135,11 +139,18 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     }
   end
 
-  # A fresh draft for an as-yet-unsaved space. `location_uuid` may be
-  # nil on :new — we resolve it at global-save time once the parent
-  # Location has its UUID.
-  defp new_draft(location_uuid) do
-    space = %Space{location_uuid: location_uuid, kind: "room", status: "active"}
+  # A fresh draft for an as-yet-unsaved space. `kind` is either "floor"
+  # (top-level tab) or "room" (child of a floor). `parent_uuid` is the
+  # floor's id for rooms, nil for floors. `location_uuid` may be nil on
+  # :new — we resolve it at global-save time once the parent Location
+  # has its UUID.
+  defp new_draft(location_uuid, kind, parent_uuid \\ nil) when kind in ["floor", "room"] do
+    space = %Space{
+      location_uuid: location_uuid,
+      kind: kind,
+      parent_uuid: parent_uuid,
+      status: "active"
+    }
 
     %{
       id: "new-" <> Ecto.UUID.generate(),
@@ -150,19 +161,37 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     }
   end
 
+  # Splits drafts by view-context. Floors are top-level tabs; rooms
+  # live under the active floor.
+  defp floor_drafts(drafts) do
+    drafts |> Enum.filter(&(&1.space.kind == "floor")) |> Enum.reject(& &1.deleted)
+  end
+
+  defp room_drafts_of(drafts, floor_id) when is_binary(floor_id) do
+    drafts
+    |> Enum.filter(fn d ->
+      d.space.kind == "room" and parent_id_of(d) == floor_id and not d.deleted
+    end)
+  end
+
+  defp room_drafts_of(_drafts, _floor_id), do: []
+
+  # A room's parent is whatever's currently in the changeset — apply
+  # the changes so the rooms list reflects live in-progress parent
+  # picks (e.g. a brand new floor draft's id) before save.
+  defp parent_id_of(%{changeset: cs}),
+    do: Ecto.Changeset.get_field(cs, :parent_uuid)
+
   defp find_draft(drafts, id), do: Enum.find(drafts, &(&1.id == id))
 
   defp update_draft(drafts, id, fun) when is_function(fun, 1) do
     Enum.map(drafts, fn d -> if d.id == id, do: fun.(d), else: d end)
   end
 
-  # Drafts visible in the tab strip — hides ones marked deleted (they
-  # still ride along in `space_drafts` so the global save can issue
-  # the actual delete, but the user shouldn't see them anymore).
-  defp visible_drafts(drafts), do: Enum.reject(drafts, & &1.deleted)
-
-  defp first_visible_id(drafts) do
-    case visible_drafts(drafts) do
+  # First non-deleted floor draft's id (or nil if none) — used after a
+  # delete to pick the next active tab.
+  defp first_visible_floor_id(drafts) do
+    case floor_drafts(drafts) do
       [] -> nil
       [first | _] -> first.id
     end
@@ -333,28 +362,76 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
 
   # ── Spaces (staged drafts — commit on global save) ─────────────
 
-  # Appends a fresh draft to the list and selects it. Location UUID may
-  # be nil here on :new — resolved when the global save fires.
-  def handle_event("add_space", _params, socket) do
+  # Two-level model: floor tabs at the top, rooms inside the active
+  # floor. Floors are always root (`parent_uuid == nil`); rooms always
+  # carry their floor's id as `parent_uuid`. Both kinds stage as
+  # in-memory drafts and only persist when the Location's bottom
+  # Save / Create button fires.
+
+  def handle_event("add_floor", _params, socket) do
     location_uuid = socket.assigns.location && socket.assigns.location.uuid
-    draft = new_draft(location_uuid)
+    draft = new_draft(location_uuid, "floor")
     drafts = socket.assigns.space_drafts ++ [draft]
-    {:noreply, assign(socket, space_drafts: drafts, active_space_id: draft.id)}
+
+    {:noreply,
+     assign(socket,
+       space_drafts: drafts,
+       active_floor_id: draft.id,
+       active_room_id: nil
+     )}
   end
 
-  def handle_event("select_space", %{"id" => id}, socket) do
-    case find_draft(socket.assigns.space_drafts, id) do
-      %{deleted: false} -> {:noreply, assign(socket, active_space_id: id)}
-      _ -> {:noreply, socket}
+  def handle_event("add_room", _params, socket) do
+    case socket.assigns.active_floor_id do
+      nil ->
+        # Shouldn't happen — the Add room button is only rendered
+        # inside an active floor tab. Defensive no-op.
+        {:noreply, socket}
+
+      floor_id ->
+        location_uuid = socket.assigns.location && socket.assigns.location.uuid
+        draft = new_draft(location_uuid, "room", floor_id)
+        drafts = socket.assigns.space_drafts ++ [draft]
+
+        {:noreply,
+         assign(socket,
+           space_drafts: drafts,
+           active_room_id: draft.id
+         )}
     end
   end
 
-  # Editing the active draft. We rebuild the changeset on top of the
-  # draft's base `space` (NOT a fresh %Space{}) so the changes shape
-  # remains a delta from the persisted baseline — critical for the
-  # global save's "no-op when no changes" check on existing rows.
+  def handle_event("select_floor", %{"id" => id}, socket) do
+    case find_draft(socket.assigns.space_drafts, id) do
+      %{deleted: false, space: %{kind: "floor"}} ->
+        {:noreply, assign(socket, active_floor_id: id, active_room_id: nil)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("edit_room", %{"id" => id}, socket) do
+    case find_draft(socket.assigns.space_drafts, id) do
+      %{deleted: false, space: %{kind: "room"}} ->
+        {:noreply, assign(socket, active_room_id: id)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("close_room_editor", _params, socket) do
+    {:noreply, assign(socket, active_room_id: nil)}
+  end
+
+  # Editing the active draft (room takes precedence over floor — when
+  # both an editor is open AND the floor form is visible, the open
+  # editor is the one the user is typing into). The form's phx-change
+  # only fires for the one being typed in, so this single handler
+  # routes both via the active-id chain.
   def handle_event("validate_space", %{"space" => params}, socket) do
-    id = socket.assigns.active_space_id
+    id = socket.assigns.active_room_id || socket.assigns.active_floor_id
 
     case find_draft(socket.assigns.space_drafts, id) do
       nil ->
@@ -366,7 +443,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
             changeset: draft.changeset,
             preserve_fields: @space_preserve_fields
           )
-          |> normalize_parent_uuid()
 
         cs =
           draft.space
@@ -379,33 +455,78 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     end
   end
 
-  def handle_event("delete_space", _params, socket) do
-    id = socket.assigns.active_space_id
+  # Marks the active floor for delete and cascades to all of its room
+  # drafts (new ones drop entirely; persisted ones get queued for the
+  # CASCADE that fires in `Spaces.delete_space/2`). Keeps the visible
+  # state consistent with what the global save will commit.
+  def handle_event("delete_floor", _params, socket) do
+    case find_draft(socket.assigns.space_drafts, socket.assigns.active_floor_id) do
+      %{space: %{kind: "floor"}} = floor ->
+        drafts = cascade_delete_floor(socket.assigns.space_drafts, floor)
+        next_floor = first_visible_floor_id(drafts)
 
-    case find_draft(socket.assigns.space_drafts, id) do
-      nil ->
+        {:noreply,
+         assign(socket,
+           space_drafts: drafts,
+           active_floor_id: next_floor,
+           active_room_id: nil
+         )}
+
+      _ ->
         {:noreply, socket}
-
-      %{persisted?: false} ->
-        # Never reached the DB — drop the draft entirely.
-        drafts = Enum.reject(socket.assigns.space_drafts, &(&1.id == id))
-        {:noreply, assign(socket, space_drafts: drafts, active_space_id: first_visible_id(drafts))}
-
-      %{persisted?: true} ->
-        # Mark for deletion; the actual `Spaces.delete_space/2` fires
-        # when the global Save/Create button commits.
-        drafts = update_draft(socket.assigns.space_drafts, id, &Map.put(&1, :deleted, true))
-        {:noreply, assign(socket, space_drafts: drafts, active_space_id: first_visible_id(drafts))}
     end
   end
 
-  # Form params arrive with `""` for the empty parent <select> option;
-  # map that to `nil` so context-side validation doesn't try to look up
-  # the empty-string "uuid". Same shape catalogue uses for its picker.
-  defp normalize_parent_uuid(%{"parent_uuid" => ""} = params),
-    do: Map.put(params, "parent_uuid", nil)
+  def handle_event("delete_room", %{"id" => id}, socket) do
+    case find_draft(socket.assigns.space_drafts, id) do
+      %{space: %{kind: "room"}, persisted?: false} ->
+        # Never reached the DB — drop entirely.
+        drafts = Enum.reject(socket.assigns.space_drafts, &(&1.id == id))
 
-  defp normalize_parent_uuid(params), do: params
+        active_room =
+          if socket.assigns.active_room_id == id, do: nil, else: socket.assigns.active_room_id
+
+        {:noreply, assign(socket, space_drafts: drafts, active_room_id: active_room)}
+
+      %{space: %{kind: "room"}, persisted?: true} ->
+        drafts = update_draft(socket.assigns.space_drafts, id, &Map.put(&1, :deleted, true))
+
+        active_room =
+          if socket.assigns.active_room_id == id, do: nil, else: socket.assigns.active_room_id
+
+        {:noreply, assign(socket, space_drafts: drafts, active_room_id: active_room)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  defp cascade_delete_floor(drafts, %{id: floor_id, persisted?: floor_persisted?}) do
+    Enum.reduce(drafts, [], fn d, acc ->
+      cond do
+        d.id == floor_id and floor_persisted? ->
+          [Map.put(d, :deleted, true) | acc]
+
+        d.id == floor_id ->
+          # New floor — drop completely.
+          acc
+
+        d.space.kind == "room" and parent_id_of(d) == floor_id and d.persisted? ->
+          # Persisted room of this floor — queue for the cascaded delete
+          # so the UI hides it now even though the DB CASCADE fires
+          # only when the floor's delete is committed.
+          [Map.put(d, :deleted, true) | acc]
+
+        d.space.kind == "room" and parent_id_of(d) == floor_id ->
+          # New room of a deleted floor — drop completely.
+          acc
+
+        true ->
+          [d | acc]
+      end
+    end)
+    |> Enum.reverse()
+  end
 
   defp save_location(socket, :new, params) do
     case Locations.create_location(params, actor_opts(socket)) do
@@ -431,72 +552,155 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     end
   end
 
-  # Iterates the draft list and applies each one's pending action
-  # against the DB. Best-effort: failures are logged and surface as a
-  # warning flash on the redirect; we don't roll back the Location
-  # save. Returns `nil` on success or `{flash_kind, msg}` to override
-  # the success flash with a warning when some drafts failed.
+  # Two-pass save: floors first (no parent_uuid concerns), then rooms
+  # with parent_uuid translated via id_map for any new floors created
+  # in pass 1. Rooms whose floor is also being deleted are skipped —
+  # the DB CASCADE handles them when the floor delete fires.
+  #
+  # Best-effort: per-draft failures log + surface as a warning flash on
+  # the redirect; we don't roll back the Location save.
   defp persist_space_drafts([], _location_uuid, _socket), do: nil
 
   defp persist_space_drafts(drafts, location_uuid, socket) do
     opts = actor_opts(socket)
 
-    errors =
-      drafts
-      |> Enum.map(&persist_draft(&1, location_uuid, opts))
-      |> Enum.filter(&match?({:error, _, _}, &1))
+    {floors, rooms} = Enum.split_with(drafts, &(&1.space.kind == "floor"))
 
-    case errors do
+    deleting_floor_ids =
+      floors
+      |> Enum.filter(&(&1.persisted? and &1.deleted))
+      |> MapSet.new(& &1.id)
+
+    {floor_errors, id_map} = persist_floor_drafts(floors, location_uuid, opts)
+
+    room_errors =
+      persist_room_drafts(rooms, deleting_floor_ids, id_map, location_uuid, opts)
+
+    case floor_errors ++ room_errors do
       [] -> nil
-      _ -> {:warning, draft_error_summary(errors)}
+      errors -> {:warning, draft_error_summary(errors)}
     end
   end
 
-  # Per-draft persistence dispatch. Tags errors with the draft id so
-  # the summary can point at which one failed.
-  defp persist_draft(%{persisted?: false, deleted: true}, _loc_uuid, _opts), do: :ok
+  defp persist_floor_drafts(floors, location_uuid, opts) do
+    Enum.reduce(floors, {[], %{}}, fn floor, {errors, id_map} ->
+      case persist_floor(floor, location_uuid, opts) do
+        :ok -> {errors, id_map}
+        {:created, new_uuid} -> {errors, Map.put(id_map, floor.id, new_uuid)}
+        {:error, _, _} = err -> {[err | errors], id_map}
+      end
+    end)
+  end
 
-  defp persist_draft(%{persisted?: true, deleted: true} = draft, _loc_uuid, opts) do
-    case Spaces.delete_space(draft.space, opts) do
+  defp persist_floor(%{persisted?: true, deleted: true} = floor, _loc, opts) do
+    case Spaces.delete_space(floor.space, opts) do
       {:ok, _} -> :ok
-      {:error, reason} -> {:error, draft.id, reason}
+      {:error, reason} -> {:error, floor.id, reason}
     end
   end
 
-  defp persist_draft(%{persisted?: false} = draft, location_uuid, opts) do
+  defp persist_floor(%{persisted?: false, deleted: true}, _loc, _opts), do: :ok
+
+  defp persist_floor(%{persisted?: false} = floor, location_uuid, opts) do
     attrs =
-      draft.changeset
+      floor.changeset
       |> Ecto.Changeset.apply_changes()
       |> space_to_attrs()
       |> Map.put("location_uuid", location_uuid)
+      |> Map.put("parent_uuid", nil)
 
     case Spaces.create_space(attrs, opts) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, draft.id, reason}
+      {:ok, saved} -> {:created, saved.uuid}
+      {:error, reason} -> {:error, floor.id, reason}
     end
   end
 
-  defp persist_draft(%{persisted?: true, changeset: %{changes: changes}}, _loc_uuid, _opts)
+  defp persist_floor(%{persisted?: true, changeset: %{changes: changes}}, _loc, _opts)
        when map_size(changes) == 0,
        do: :ok
 
-  defp persist_draft(%{persisted?: true} = draft, _loc_uuid, opts) do
-    attrs =
-      draft.changeset
-      |> Ecto.Changeset.apply_changes()
-      |> space_to_attrs()
+  defp persist_floor(%{persisted?: true} = floor, _loc, opts) do
+    attrs = floor.changeset |> Ecto.Changeset.apply_changes() |> space_to_attrs()
 
-    case Spaces.update_space(draft.space, attrs, opts) do
+    case Spaces.update_space(floor.space, attrs, opts) do
       {:ok, _} -> :ok
-      {:error, reason} -> {:error, draft.id, reason}
+      {:error, reason} -> {:error, floor.id, reason}
     end
   end
+
+  defp persist_room_drafts(rooms, deleting_floor_ids, id_map, location_uuid, opts) do
+    Enum.reduce(rooms, [], fn room, errors ->
+      parent_id = parent_id_of(room)
+
+      cond do
+        parent_id in deleting_floor_ids ->
+          # Floor's delete will CASCADE this room (for persisted ones)
+          # or it was never staged (for new ones).
+          errors
+
+        true ->
+          case persist_room(room, id_map, location_uuid, opts) do
+            :ok -> errors
+            {:error, _, _} = err -> [err | errors]
+          end
+      end
+    end)
+  end
+
+  defp persist_room(%{persisted?: true, deleted: true} = room, _id_map, _loc, opts) do
+    case Spaces.delete_space(room.space, opts) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, room.id, reason}
+    end
+  end
+
+  defp persist_room(%{persisted?: false, deleted: true}, _id_map, _loc, _opts), do: :ok
+
+  defp persist_room(%{persisted?: false} = room, id_map, location_uuid, opts) do
+    parent_uuid = resolve_parent_uuid(parent_id_of(room), id_map)
+
+    attrs =
+      room.changeset
+      |> Ecto.Changeset.apply_changes()
+      |> space_to_attrs()
+      |> Map.put("location_uuid", location_uuid)
+      |> Map.put("parent_uuid", parent_uuid)
+
+    case Spaces.create_space(attrs, opts) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, room.id, reason}
+    end
+  end
+
+  defp persist_room(%{persisted?: true, changeset: %{changes: changes}}, _id_map, _loc, _opts)
+       when map_size(changes) == 0,
+       do: :ok
+
+  defp persist_room(%{persisted?: true} = room, id_map, _loc, opts) do
+    parent_uuid = resolve_parent_uuid(parent_id_of(room), id_map)
+
+    attrs =
+      room.changeset
+      |> Ecto.Changeset.apply_changes()
+      |> space_to_attrs()
+      |> Map.put("parent_uuid", parent_uuid)
+
+    case Spaces.update_space(room.space, attrs, opts) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, room.id, reason}
+    end
+  end
+
+  # Translates a draft id ("new-XXX") to its newly created DB uuid via
+  # the floor pass's id_map. Real persisted uuids pass through unchanged.
+  defp resolve_parent_uuid(nil, _id_map), do: nil
+  defp resolve_parent_uuid(uuid, id_map), do: Map.get(id_map, uuid, uuid)
 
   # Extracts the params shape `Spaces.{create,update}_space` expects
   # from the effective Space struct (base + applied changes). We pass
   # all relevant fields explicitly so the underlying cast/3 sees them
   # — passing only the changes map would lose default values from the
-  # draft's base struct (e.g. `kind: "room"` on a brand-new draft).
+  # draft's base struct (e.g. `kind` from new_draft/3).
   defp space_to_attrs(%Space{} = s) do
     %{
       "kind" => s.kind,
@@ -505,7 +709,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       "notes" => s.notes,
       "status" => s.status,
       "position" => s.position,
-      "parent_uuid" => s.parent_uuid,
       "data" => s.data || %{}
     }
   end
@@ -1037,29 +1240,34 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     """
   end
 
-  # The Spaces card — a sibling of the two halves of the Location form
-  # (HTML forbids nested forms). Drafts live in `@space_drafts` and
-  # commit only when the global Save/Create button fires.
+  # The Spaces card. Two levels:
+  #   - Top tab strip: one tab per Floor draft + a trailing "+ Add floor".
+  #   - Inside the active Floor tab: the floor's own form + a list of
+  #     its Rooms with inline edit/delete and a "+ Add room" button.
+  # Editing a Room replaces the rooms list with the room's form (so
+  # only one form is "open" at a time and the single validate_space
+  # handler can route via active_room_id || active_floor_id).
   defp render_spaces_section(assigns) do
-    visible = visible_drafts(assigns.space_drafts)
-    active = active_draft(assigns)
+    floors = floor_drafts(assigns.space_drafts)
+    active_floor = if assigns.active_floor_id, do: find_draft(assigns.space_drafts, assigns.active_floor_id), else: nil
+    active_floor = if active_floor && active_floor.deleted, do: nil, else: active_floor
+
+    active_room =
+      if assigns.active_room_id,
+        do: find_draft(assigns.space_drafts, assigns.active_room_id),
+        else: nil
+
+    active_room = if active_room && active_room.deleted, do: nil, else: active_room
+
+    rooms_for_floor =
+      if active_floor, do: room_drafts_of(assigns.space_drafts, active_floor.id), else: []
 
     assigns =
       assigns
-      |> assign(:visible_drafts, visible)
-      |> assign(:active_draft, active)
-      |> assign(:active_form, active && to_form(active.changeset, as: :space))
-      |> assign(:active_changeset, active && active.changeset)
-      |> assign(
-        :space_lang_data,
-        space_lang_data(
-          active && active.changeset,
-          assigns.current_lang,
-          assigns.multilang_enabled
-        )
-      )
-      |> assign(:parent_options, parent_options_for_drafts(visible, active))
-      |> assign(:kind_options, kind_options())
+      |> assign(:floor_tabs, floors)
+      |> assign(:active_floor, active_floor)
+      |> assign(:active_room, active_room)
+      |> assign(:rooms_for_floor, rooms_for_floor)
 
     ~H"""
     <div class="card bg-base-100 shadow-lg mt-6">
@@ -1067,172 +1275,305 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         <div class="flex flex-col gap-0.5">
           <h2 class="text-base font-semibold text-base-content/80 flex items-center gap-2">
             <.icon name="hero-squares-2x2" class="w-4 h-4" /> {gettext("Spaces")}
-            <span :if={@visible_drafts != []} class="badge badge-sm badge-ghost ml-1">
-              {length(@visible_drafts)}
+            <span :if={@floor_tabs != []} class="badge badge-sm badge-ghost ml-1">
+              {length(@floor_tabs)} {ngettext("floor", "floors", length(@floor_tabs))}
             </span>
           </h2>
           <p class="text-xs text-base-content/50">
-            {gettext("Break this location into rooms, floors, or zones inside the building above. Changes save together with the location below.")}
+            {gettext("Add floors to this location, then list the rooms inside each. Changes save together with the location below.")}
           </p>
         </div>
 
-        <%!-- Tab strip — one tab per draft + "+ Add" trailing tab. --%>
+        <%!-- Floor tabs. Empty state shows only the + Add floor button. --%>
         <div role="tablist" class="tabs tabs-bordered overflow-x-auto flex-nowrap">
           <button
-            :for={d <- @visible_drafts}
+            :for={f <- @floor_tabs}
             type="button"
-            phx-click="select_space"
-            phx-value-id={d.id}
+            phx-click="select_floor"
+            phx-value-id={f.id}
             class={[
               "tab whitespace-nowrap",
-              if(@active_space_id == d.id, do: "tab-active", else: ""),
-              if(!d.persisted?, do: "italic", else: "")
+              if(@active_floor_id == f.id, do: "tab-active", else: ""),
+              if(!f.persisted?, do: "italic", else: "")
             ]}
-            title={draft_tab_label(d, @visible_drafts)}
+            title={floor_tab_label(f)}
           >
-            <span class="text-xs">{draft_tab_label(d, @visible_drafts)}</span>
+            <span class="text-xs">{floor_tab_label(f)}</span>
           </button>
           <button
             type="button"
-            phx-click="add_space"
+            phx-click="add_floor"
             class="tab whitespace-nowrap"
           >
             <.icon name="hero-plus" class="w-4 h-4 mr-1" />
-            <span class="text-xs">{gettext("Add space")}</span>
+            <span class="text-xs">{gettext("Add floor")}</span>
           </button>
         </div>
 
-        <%!-- Empty state — no drafts at all. Just the +Add tab above
-             plus a hint. No fields are shown until the user clicks Add. --%>
-        <div :if={@visible_drafts == []} class="text-sm text-base-content/50 py-4">
-          {gettext("No spaces yet. Click \"Add space\" above to break this location into rooms, floors, or zones.")}
+        <%!-- Empty state — no floors yet. --%>
+        <div :if={@floor_tabs == []} class="text-sm text-base-content/50 py-4">
+          {gettext("No floors yet. Click \"Add floor\" above to start breaking down this location.")}
         </div>
 
-        <%!-- Idle state — drafts exist but none selected. Prompt the
-             user to pick one without rendering a stale form. --%>
-        <div
-          :if={@visible_drafts != [] and is_nil(@active_draft)}
-          class="text-sm text-base-content/50 py-4"
-        >
-          {gettext("Pick a tab above to edit a space, or click \"Add space\" for a new one.")}
-        </div>
-
-        <%!-- Active draft form. NOT a nested submission — `phx-submit`
-             is intentionally omitted: nothing here saves on its own.
-             The phx-change="validate_space" pipe keeps the active
-             draft's changeset live so the global Save handler picks
-             up the latest values. --%>
-        <.form
-          :if={@active_draft}
-          for={@active_form}
-          id="location-space-form"
-          action="#"
-          phx-change="validate_space"
-          class="flex flex-col gap-4"
-        >
-          <%!-- Kind / Parent / Status share one row to keep the form
-               short. Parent picker offers only PERSISTED spaces — new
-               drafts can't be picked as parents because they don't yet
-               have a real UUID to point at. --%>
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <.select
-              field={@active_form[:kind]}
-              label={gettext("Kind")}
-              options={@kind_options}
-            />
-            <.select
-              field={@active_form[:parent_uuid]}
-              label={gettext("Parent space")}
-              options={@parent_options}
-            />
-            <.select
-              field={@active_form[:status]}
-              label={gettext("Status")}
-              options={[{gettext("Active"), "active"}, {gettext("Inactive"), "inactive"}]}
-            />
-          </div>
-
-          <.translatable_field
-            field_name="name"
-            form_prefix="space"
-            changeset={@active_changeset}
-            schema_field={:name}
-            multilang_enabled={@multilang_enabled}
-            current_lang={@current_lang}
-            primary_language={@primary_language}
-            lang_data={@space_lang_data}
-            label={gettext("Name")}
-            placeholder={gettext("e.g., Floor 2, Conference Room, Storage Zone A")}
-            class="w-full"
-          />
-
-          <.translatable_field
-            field_name="description"
-            form_prefix="space"
-            changeset={@active_changeset}
-            schema_field={:description}
-            multilang_enabled={@multilang_enabled}
-            current_lang={@current_lang}
-            primary_language={@primary_language}
-            lang_data={@space_lang_data}
-            label={gettext("Description")}
-            type="textarea"
-            placeholder={gettext("Brief description of this space...")}
-            class="w-full"
-          />
-
-          <details class="text-sm">
-            <summary class="cursor-pointer text-base-content/60 select-none">
-              {gettext("Internal notes (admin-only)")}
-            </summary>
-            <div class="mt-2">
-              <.textarea
-                field={@active_form[:notes]}
-                label={nil}
-                rows="2"
-                placeholder={gettext("Admin-only notes...")}
-                class="min-h-[4rem]"
-              />
-            </div>
-          </details>
-
-          <%!-- Delete removes the tab from the staging list. For
-               persisted drafts it queues the actual DB delete for the
-               global save; for new ones it just drops the in-memory
-               entry. Either way, the Location form's Save button is
-               the only commit point. --%>
-          <div class="flex justify-end pt-2">
-            <button
-              type="button"
-              phx-click="delete_space"
-              data-confirm={
-                if @active_draft.persisted?,
-                  do: gettext("Mark this space (and any sub-spaces) for deletion? The change applies when you save the location."),
-                  else: gettext("Discard this unsaved space?")
-              }
-              class="btn btn-ghost btn-sm text-error"
-            >
-              <.icon name="hero-trash" class="w-4 h-4 mr-1" />
-              {if @active_draft.persisted?, do: gettext("Remove"), else: gettext("Discard")}
-            </button>
-          </div>
-        </.form>
+        <%!-- Active floor view. Renders the floor's own form, then
+             either the rooms list OR (when a room is being edited)
+             the room editor in its place. --%>
+        <%= if @active_floor do %>
+          <%= if @active_room do %>
+            {render_room_editor(assigns)}
+          <% else %>
+            {render_floor_view(assigns)}
+          <% end %>
+        <% end %>
       </div>
     </div>
     """
   end
 
-  # Resolves the active draft from the drafts list, falling through
-  # nil-active or stale-id states to nil (which the template treats as
-  # the "no fields" idle state).
-  defp active_draft(%{space_drafts: drafts, active_space_id: id}) when is_binary(id) do
-    case Enum.find(drafts, &(&1.id == id and not &1.deleted)) do
-      nil -> nil
-      draft -> draft
-    end
+  # The active floor's form + its rooms list. Only rendered when no
+  # room editor is open (the room editor replaces the rooms list).
+  defp render_floor_view(assigns) do
+    floor = assigns.active_floor
+
+    assigns =
+      assigns
+      |> assign(:floor_form, to_form(floor.changeset, as: :space))
+      |> assign(:floor_changeset, floor.changeset)
+      |> assign(:floor, floor)
+      |> assign(
+        :floor_lang_data,
+        space_lang_data(floor.changeset, assigns.current_lang, assigns.multilang_enabled)
+      )
+
+    ~H"""
+    <.form
+      for={@floor_form}
+      id="location-floor-form"
+      action="#"
+      phx-change="validate_space"
+      class="flex flex-col gap-4"
+    >
+      <.translatable_field
+        field_name="name"
+        form_prefix="space"
+        changeset={@floor_changeset}
+        schema_field={:name}
+        multilang_enabled={@multilang_enabled}
+        current_lang={@current_lang}
+        primary_language={@primary_language}
+        lang_data={@floor_lang_data}
+        label={gettext("Floor name")}
+        placeholder={gettext("e.g., Ground Floor, Floor 2, Basement")}
+        class="w-full"
+      />
+
+      <.translatable_field
+        field_name="description"
+        form_prefix="space"
+        changeset={@floor_changeset}
+        schema_field={:description}
+        multilang_enabled={@multilang_enabled}
+        current_lang={@current_lang}
+        primary_language={@primary_language}
+        lang_data={@floor_lang_data}
+        label={gettext("Description")}
+        type="textarea"
+        placeholder={gettext("Brief description of this floor...")}
+        class="w-full"
+      />
+
+      <details class="text-sm">
+        <summary class="cursor-pointer text-base-content/60 select-none">
+          {gettext("Internal notes (admin-only)")}
+        </summary>
+        <div class="mt-2">
+          <.textarea
+            field={@floor_form[:notes]}
+            label={nil}
+            rows="2"
+            placeholder={gettext("Admin-only notes...")}
+            class="min-h-[4rem]"
+          />
+        </div>
+      </details>
+
+      <div class="flex justify-end pt-2">
+        <button
+          type="button"
+          phx-click="delete_floor"
+          data-confirm={
+            if @floor.persisted?,
+              do: gettext("Mark this floor and its rooms for deletion? The change applies when you save the location."),
+              else: gettext("Discard this unsaved floor and any rooms inside it?")
+          }
+          class="btn btn-ghost btn-sm text-error"
+        >
+          <.icon name="hero-trash" class="w-4 h-4 mr-1" />
+          {if @floor.persisted?, do: gettext("Remove floor"), else: gettext("Discard floor")}
+        </button>
+      </div>
+    </.form>
+
+    <div class="divider my-0"></div>
+
+    <%!-- Rooms list — outside the floor's <.form> so the room
+         action buttons don't accidentally submit the floor form. --%>
+    <div class="flex flex-col gap-2">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-base-content/70 flex items-center gap-1.5">
+          <.icon name="hero-rectangle-stack" class="w-4 h-4" /> {gettext("Rooms on this floor")}
+          <span :if={@rooms_for_floor != []} class="badge badge-xs badge-ghost ml-1">
+            {length(@rooms_for_floor)}
+          </span>
+        </h3>
+        <button type="button" phx-click="add_room" class="btn btn-ghost btn-xs">
+          <.icon name="hero-plus" class="w-3.5 h-3.5 mr-1" /> {gettext("Add room")}
+        </button>
+      </div>
+
+      <p :if={@rooms_for_floor == []} class="text-xs text-base-content/50 py-2">
+        {gettext("No rooms on this floor yet.")}
+      </p>
+
+      <ul :if={@rooms_for_floor != []} class="flex flex-col gap-1.5">
+        <li
+          :for={r <- @rooms_for_floor}
+          class="flex items-center gap-2 border border-base-300 rounded-md px-3 py-2"
+        >
+          <span class={["flex-1 text-sm", if(!r.persisted?, do: "italic", else: "")]}>
+            {room_row_label(r)}
+          </span>
+          <button
+            type="button"
+            phx-click="edit_room"
+            phx-value-id={r.id}
+            class="btn btn-ghost btn-xs"
+          >
+            <.icon name="hero-pencil-square" class="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            phx-click="delete_room"
+            phx-value-id={r.id}
+            data-confirm={
+              if r.persisted?,
+                do: gettext("Mark this room for deletion?"),
+                else: gettext("Discard this unsaved room?")
+            }
+            class="btn btn-ghost btn-xs text-error"
+          >
+            <.icon name="hero-trash" class="w-3.5 h-3.5" />
+          </button>
+        </li>
+      </ul>
+    </div>
+    """
   end
 
-  defp active_draft(_), do: nil
+  # The room editor — replaces the rooms list when a room is being
+  # edited. Single form bound to the active room's changeset.
+  defp render_room_editor(assigns) do
+    room = assigns.active_room
+
+    assigns =
+      assigns
+      |> assign(:room_form, to_form(room.changeset, as: :space))
+      |> assign(:room_changeset, room.changeset)
+      |> assign(:room, room)
+      |> assign(
+        :room_lang_data,
+        space_lang_data(room.changeset, assigns.current_lang, assigns.multilang_enabled)
+      )
+
+    ~H"""
+    <div class="flex items-center justify-between text-sm text-base-content/60">
+      <button
+        type="button"
+        phx-click="close_room_editor"
+        class="btn btn-ghost btn-xs"
+      >
+        <.icon name="hero-arrow-left" class="w-3.5 h-3.5 mr-1" /> {gettext("Back to floor")}
+      </button>
+      <span>{gettext("Editing room")}</span>
+    </div>
+
+    <.form
+      for={@room_form}
+      id="location-room-form"
+      action="#"
+      phx-change="validate_space"
+      class="flex flex-col gap-4"
+    >
+      <.translatable_field
+        field_name="name"
+        form_prefix="space"
+        changeset={@room_changeset}
+        schema_field={:name}
+        multilang_enabled={@multilang_enabled}
+        current_lang={@current_lang}
+        primary_language={@primary_language}
+        lang_data={@room_lang_data}
+        label={gettext("Room name")}
+        placeholder={gettext("e.g., Conference Room A, Storage, Office 3B")}
+        class="w-full"
+      />
+
+      <.translatable_field
+        field_name="description"
+        form_prefix="space"
+        changeset={@room_changeset}
+        schema_field={:description}
+        multilang_enabled={@multilang_enabled}
+        current_lang={@current_lang}
+        primary_language={@primary_language}
+        lang_data={@room_lang_data}
+        label={gettext("Description")}
+        type="textarea"
+        placeholder={gettext("Brief description of this room...")}
+        class="w-full"
+      />
+
+      <details class="text-sm">
+        <summary class="cursor-pointer text-base-content/60 select-none">
+          {gettext("Internal notes (admin-only)")}
+        </summary>
+        <div class="mt-2">
+          <.textarea
+            field={@room_form[:notes]}
+            label={nil}
+            rows="2"
+            placeholder={gettext("Admin-only notes...")}
+            class="min-h-[4rem]"
+          />
+        </div>
+      </details>
+
+      <div class="flex justify-between items-center pt-2">
+        <button
+          type="button"
+          phx-click="delete_room"
+          phx-value-id={@room.id}
+          data-confirm={
+            if @room.persisted?,
+              do: gettext("Mark this room for deletion?"),
+              else: gettext("Discard this unsaved room?")
+          }
+          class="btn btn-ghost btn-sm text-error"
+        >
+          <.icon name="hero-trash" class="w-4 h-4 mr-1" />
+          {if @room.persisted?, do: gettext("Remove room"), else: gettext("Discard room")}
+        </button>
+        <button
+          type="button"
+          phx-click="close_room_editor"
+          class="btn btn-ghost btn-sm"
+        >
+          {gettext("Done")}
+        </button>
+      </div>
+    </.form>
+    """
+  end
 
   # Small local component — keeps the five section headings in the
   # form template identical in shape (icon + label) without repeating
@@ -1273,94 +1614,33 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
 
   # ── Space helpers ────────────────────────────────────────────────
 
-  # Translatable kind labels — each literal is picked up by
-  # `mix gettext.extract`. Stored value is always the lowercase string
-  # from `Space.kinds()`.
-  defp kind_label("floor"), do: gettext("Floor")
-  defp kind_label("room"), do: gettext("Room")
-  defp kind_label("hall"), do: gettext("Hall")
-  defp kind_label("suite"), do: gettext("Suite")
-  defp kind_label("section"), do: gettext("Section")
-  defp kind_label("zone"), do: gettext("Zone")
-  defp kind_label("aisle"), do: gettext("Aisle")
-  defp kind_label("shelf"), do: gettext("Shelf")
-  defp kind_label("corner"), do: gettext("Corner")
-  defp kind_label(other), do: other
-
-  defp kind_options do
-    Enum.map(Space.kinds(), fn k -> {kind_label(k), k} end)
-  end
-
-  # Builds "Kind: Name" labels with " → " breadcrumb prefix for nested
-  # drafts. Each draft's display fields come from
-  # `apply_changes(changeset)` so the tab label reflects the user's
-  # in-progress typing, not the stale persisted baseline.
-  # Bounded walk so a corrupted parent chain can't spin forever.
-  defp draft_tab_label(draft, drafts) do
+  # Floor tab label — pulls the live name from the draft's working
+  # changeset so the tab reflects what the user is typing right now.
+  defp floor_tab_label(draft) do
     space = Ecto.Changeset.apply_changes(draft.changeset)
-    own = draft_label_own(space, draft.persisted?)
 
-    case draft_breadcrumb_prefix(space.parent_uuid, drafts, 32) do
-      "" -> own
-      prefix -> "#{prefix} → #{own}"
+    cond do
+      space.name && space.name != "" -> space.name
+      draft.persisted? -> gettext("(unnamed floor)")
+      true -> gettext("New floor")
     end
   end
 
-  defp draft_label_own(space, persisted?) do
-    name =
-      cond do
-        space.name && space.name != "" -> space.name
-        persisted? -> gettext("(unnamed)")
-        true -> gettext("New space")
-      end
+  # Room row label — same idea as floor_tab_label for the rooms list.
+  defp room_row_label(draft) do
+    space = Ecto.Changeset.apply_changes(draft.changeset)
 
-    "#{kind_label(space.kind)}: #{name}"
-  end
-
-  defp draft_breadcrumb_prefix(nil, _drafts, _hops_remaining), do: ""
-  defp draft_breadcrumb_prefix(_uuid, _drafts, 0), do: "…"
-
-  defp draft_breadcrumb_prefix(uuid, drafts, hops_remaining) do
-    case Enum.find(drafts, &(&1.id == uuid)) do
-      nil ->
-        ""
-
-      parent_draft ->
-        parent_space = Ecto.Changeset.apply_changes(parent_draft.changeset)
-        own = draft_label_own(parent_space, parent_draft.persisted?)
-
-        case draft_breadcrumb_prefix(parent_space.parent_uuid, drafts, hops_remaining - 1) do
-          "" -> own
-          prefix -> "#{prefix} → #{own}"
-        end
+    cond do
+      space.name && space.name != "" -> space.name
+      draft.persisted? -> gettext("(unnamed room)")
+      true -> gettext("New room")
     end
-  end
-
-  # Parent picker options. Excludes:
-  #   - the active draft itself (can't parent yourself);
-  #   - any non-persisted drafts (their UUID-strings are draft ids,
-  #     not real `phoenix_kit_location_spaces.uuid` values, so the FK
-  #     insert would fail).
-  # Indirect cycles for persisted-to-persisted moves are blocked by
-  # `Spaces.update_space/3` at save time — not recomputed here to keep
-  # render cheap.
-  defp parent_options_for_drafts(visible_drafts, active_draft) do
-    root = {gettext("— None (top level) —"), ""}
-    active_id = active_draft && active_draft.id
-
-    children =
-      visible_drafts
-      |> Enum.filter(& &1.persisted?)
-      |> Enum.reject(fn d -> d.id == active_id end)
-      |> Enum.map(fn d -> {draft_tab_label(d, visible_drafts), d.id} end)
-
-    [root | children]
   end
 
   # Mirrors `get_lang_data/3` from MultilangForm but tolerant of a nil
-  # changeset (on :new the spaces state is not initialised). Returns
-  # an empty map when no changeset — the translatable_field component
-  # treats that as "no overrides," falling back to primary values.
+  # changeset (on :new no drafts exist). Returns an empty map when no
+  # changeset — the translatable_field component treats that as "no
+  # overrides," falling back to primary values.
   defp space_lang_data(nil, _current_lang, _multilang_enabled), do: %{}
 
   defp space_lang_data(changeset, current_lang, multilang_enabled),
