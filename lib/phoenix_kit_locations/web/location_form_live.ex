@@ -640,8 +640,8 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         location_folder = Attachments.state(socket, location_scope()).folder_uuid
         _ = Attachments.maybe_rename_pending_folder_for(location_folder, location)
 
-        flash = persist_space_drafts(socket.assigns.space_drafts, location.uuid, socket)
-        sync_types_and_redirect(socket, location.uuid, gettext("Location created."), flash)
+        {flash, failed_ids} = persist_space_drafts(socket.assigns.space_drafts, location.uuid, socket)
+        finish_save(socket, location, gettext("Location created."), flash, failed_ids)
 
       {:error, changeset} ->
         {:noreply, assign_form(socket, Map.put(changeset, :action, :validate))}
@@ -651,12 +651,70 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp save_location(socket, :edit, params) do
     case Locations.update_location(socket.assigns.location, params, actor_opts(socket)) do
       {:ok, location} ->
-        flash = persist_space_drafts(socket.assigns.space_drafts, location.uuid, socket)
-        sync_types_and_redirect(socket, location.uuid, gettext("Location updated."), flash)
+        {flash, failed_ids} = persist_space_drafts(socket.assigns.space_drafts, location.uuid, socket)
+        finish_save(socket, location, gettext("Location updated."), flash, failed_ids)
 
       {:error, changeset} ->
         {:noreply, assign_form(socket, Map.put(changeset, :action, :validate))}
     end
+  end
+
+  # Decides whether to redirect (full success) or stay on the page
+  # (partial failure). Staying preserves the in-memory drafts that
+  # failed so the user can fix them and retry instead of losing all
+  # their typing.
+  defp finish_save(socket, location, success_msg, nil, _failed_ids) do
+    sync_types_and_redirect(socket, location.uuid, success_msg, nil)
+  end
+
+  defp finish_save(socket, location, _success_msg, {kind, msg}, failed_ids) do
+    fresh_persisted =
+      location.uuid |> safe_list_spaces() |> Enum.map(&persisted_draft/1)
+
+    failed_drafts =
+      Enum.filter(socket.assigns.space_drafts, fn d -> MapSet.member?(failed_ids, d.id) end)
+
+    new_drafts = fresh_persisted ++ failed_drafts
+
+    {:noreply,
+     socket
+     |> assign(:location, location)
+     |> put_flash(kind, msg)
+     |> assign(space_drafts: new_drafts)
+     |> reseat_active_tabs(new_drafts)
+     |> remount_space_scopes(fresh_persisted)}
+  end
+
+  # After a partial save we may have swapped the active floor / room
+  # ids out from under the user (e.g. their previously-active floor
+  # just succeeded so its old draft id is gone, replaced by a new
+  # persisted draft). Bounce the active ids to whatever still exists
+  # in the new drafts list.
+  defp reseat_active_tabs(socket, drafts) do
+    ids = MapSet.new(drafts, & &1.id)
+
+    active_floor =
+      cond do
+        socket.assigns.active_floor_id in ids -> socket.assigns.active_floor_id
+        true -> first_visible_floor_id(drafts)
+      end
+
+    active_room =
+      if socket.assigns.active_room_id in ids,
+        do: socket.assigns.active_room_id,
+        else: nil
+
+    assign(socket, active_floor_id: active_floor, active_room_id: active_room)
+  end
+
+  # The freshly-reloaded persisted drafts need their attachment scopes
+  # mounted (their UUIDs are different from the draft-ids they had
+  # in memory pre-save). The previously-failed drafts keep using
+  # their original scope keys — those are untouched.
+  defp remount_space_scopes(socket, fresh_persisted) do
+    Enum.reduce(fresh_persisted, socket, fn d, s ->
+      Attachments.mount(s, scope: d.id, resource: d.space)
+    end)
   end
 
   # Two-pass save: floors first (no parent_uuid concerns), then rooms
@@ -668,6 +726,8 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   # the redirect; we don't roll back the Location save.
   defp persist_space_drafts([], _location_uuid, _socket), do: nil
 
+  defp persist_space_drafts([], _location_uuid, _socket), do: {nil, MapSet.new()}
+
   defp persist_space_drafts(drafts, location_uuid, socket) do
     opts = actor_opts(socket)
 
@@ -678,31 +738,73 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> Enum.filter(&(&1.persisted? and &1.deleted))
       |> MapSet.new(& &1.id)
 
-    {floor_errors, id_map, skipped_floor_ids} =
-      persist_floor_drafts(floors, location_uuid, opts, socket)
+    # Pre-compute which blank-name new floors are ORPHANS — i.e. have
+    # no in-memory room drafts pointing at them. Those are almost
+    # certainly abandoned "+ Add floor" clicks and we silent-skip them.
+    # Blank-name floors that DO have rooms under them are NOT skipped
+    # — we let validation surface "name can't be blank" so the user
+    # knows to either name the floor or discard the rooms.
+    orphan_blank_floor_ids =
+      floors
+      |> Enum.filter(&orphan_blank_floor?(&1, rooms))
+      |> MapSet.new(& &1.id)
 
-    # Rooms parented to either a deleting floor (CASCADE handles them)
-    # or a silently-skipped floor (blank name; the parent uuid was
-    # never resolved) need to be skipped too — otherwise they'd
-    # cascade-fail with `:parent_in_other_location`.
-    skip_parent_floor_ids = MapSet.union(deleting_floor_ids, skipped_floor_ids)
+    {floor_errors, id_map} =
+      persist_floor_drafts(floors, orphan_blank_floor_ids, location_uuid, opts, socket)
+
+    # Rooms parented to a deleting-persisted floor are skipped (DB
+    # CASCADE handles them) and rooms parented to an orphan-blank
+    # floor are skipped (their parent silently dropped). Rooms whose
+    # parent floor SURVIVED to a save attempt but failed validation
+    # are handled inside persist_room/5 — it suppresses the cascade
+    # error so the user only sees the root cause (the floor's blank
+    # name).
+    skip_parent_floor_ids = MapSet.union(deleting_floor_ids, orphan_blank_floor_ids)
 
     room_errors =
       persist_room_drafts(rooms, skip_parent_floor_ids, id_map, location_uuid, opts, socket)
 
-    case floor_errors ++ room_errors do
-      [] -> nil
-      errors -> {:warning, draft_error_summary(errors)}
-    end
+    errors = floor_errors ++ room_errors
+    failed_ids = MapSet.new(errors, fn {:error, id, _reason} -> id end)
+
+    flash =
+      case errors do
+        [] -> nil
+        _ -> {:warning, draft_error_summary(errors)}
+      end
+
+    {flash, failed_ids}
   end
 
-  defp persist_floor_drafts(floors, location_uuid, opts, socket) do
-    Enum.reduce(floors, {[], %{}, MapSet.new()}, fn floor, {errors, id_map, skipped} ->
-      case persist_floor(floor, location_uuid, opts, socket) do
-        :ok -> {errors, id_map, skipped}
-        :skipped -> {errors, id_map, MapSet.put(skipped, floor.id)}
-        {:created, new_uuid} -> {errors, Map.put(id_map, floor.id, new_uuid), skipped}
-        {:error, _, _} = err -> {[err | errors], id_map, skipped}
+  # True for a new, not-deleted floor draft with a blank name and no
+  # in-memory room drafts pointing at it. Such drafts come from
+  # accidental "+ Add floor" clicks and are safe to silently drop on
+  # save without leaving the user wondering "where did my data go?"
+  defp orphan_blank_floor?(%{persisted?: false, deleted: false, changeset: cs} = floor, rooms) do
+    blank_changeset_name?(cs) and
+      not Enum.any?(rooms, fn r -> parent_id_of(r) == floor.id and not r.deleted end)
+  end
+
+  defp orphan_blank_floor?(_floor, _rooms), do: false
+
+  defp blank_changeset_name?(cs) do
+    name = Ecto.Changeset.get_field(cs, :name)
+    is_nil(name) or (is_binary(name) and String.trim(name) == "")
+  end
+
+  defp persist_floor_drafts(floors, orphan_blank_floor_ids, location_uuid, opts, socket) do
+    Enum.reduce(floors, {[], %{}}, fn floor, {errors, id_map} ->
+      cond do
+        floor.id in orphan_blank_floor_ids ->
+          # Silent skip — abandoned, no children to orphan.
+          {errors, id_map}
+
+        true ->
+          case persist_floor(floor, location_uuid, opts, socket) do
+            :ok -> {errors, id_map}
+            {:created, new_uuid} -> {errors, Map.put(id_map, floor.id, new_uuid)}
+            {:error, _, _} = err -> {[err | errors], id_map}
+          end
       end
     end)
   end
@@ -716,6 +818,10 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
 
   defp persist_floor(%{persisted?: false, deleted: true}, _loc, _opts, _socket), do: :ok
 
+  # Orphan-blank floors are silently skipped UPSTREAM in
+  # persist_floor_drafts/5. Anything that reaches persist_floor/4 here
+  # is either non-blank (will save) or blank-but-has-children (will
+  # surface "name can't be blank" so the user fixes it).
   defp persist_floor(%{persisted?: false} = floor, location_uuid, opts, socket) do
     attrs =
       floor.changeset
@@ -725,27 +831,14 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> Map.put("parent_uuid", nil)
       |> Attachments.inject_attachment_data(socket, floor.id)
 
-    cond do
-      # Blank-name new draft = almost certainly an abandoned "+ Add
-      # floor" click the user forgot to fill in (or accidentally
-      # double-clicked). Silently skip instead of bubbling an
-      # confusing "Name can't be blank" error to the save flash AND
-      # cascade-failing every room underneath. Returning :skipped
-      # lets the floor pass collect this id so room-pass can also
-      # skip orphaned rooms.
-      blank_required_field?(attrs) ->
-        :skipped
+    case Spaces.create_space(attrs, opts) do
+      {:ok, saved} ->
+        st = Attachments.state(socket, floor.id)
+        _ = Attachments.maybe_rename_pending_folder_for(st.folder_uuid, saved)
+        {:created, saved.uuid}
 
-      true ->
-        case Spaces.create_space(attrs, opts) do
-          {:ok, saved} ->
-            st = Attachments.state(socket, floor.id)
-            _ = Attachments.maybe_rename_pending_folder_for(st.folder_uuid, saved)
-            {:created, saved.uuid}
-
-          {:error, reason} ->
-            {:error, floor.id, reason}
-        end
+      {:error, reason} ->
+        {:error, floor.id, reason}
     end
   end
 
@@ -800,7 +893,8 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp persist_room(%{persisted?: false, deleted: true}, _id_map, _loc, _opts, _socket), do: :ok
 
   defp persist_room(%{persisted?: false} = room, id_map, location_uuid, opts, socket) do
-    parent_uuid = resolve_parent_uuid(parent_id_of(room), id_map)
+    parent_id = parent_id_of(room)
+    parent_uuid = resolve_parent_uuid(parent_id, id_map)
 
     attrs =
       room.changeset
@@ -811,9 +905,17 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> Attachments.inject_attachment_data(socket, room.id)
 
     cond do
-      # Same silent-skip semantics as floors (see persist_floor).
+      # Blank-name new room is treated as abandoned and silently dropped.
       blank_required_field?(attrs) ->
         :ok
+
+      # Parent floor didn't persist (probably needs a name). Don't try
+      # `Spaces.create_space/2` — its FK would surface as
+      # `:parent_in_other_location` which is misleading. Report a
+      # purpose-built error so the user can see this room is held up
+      # by its parent rather than silently disappearing.
+      parent_uuid != nil and draft_id?(parent_uuid) ->
+        {:error, room.id, :parent_floor_unsaved}
 
       true ->
         case Spaces.create_space(attrs, opts) do
@@ -827,6 +929,9 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         end
     end
   end
+
+  defp draft_id?(id) when is_binary(id), do: String.starts_with?(id, "new-")
+  defp draft_id?(_), do: false
 
   defp persist_room(%{persisted?: true, changeset: cs} = room, id_map, _loc, opts, socket) do
     has_field_changes? = map_size(cs.changes) > 0

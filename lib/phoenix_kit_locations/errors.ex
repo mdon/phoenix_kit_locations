@@ -45,6 +45,9 @@ defmodule PhoenixKitLocations.Errors do
   def message(:cycle),
     do: gettext("Cannot make a space its own ancestor.")
 
+  def message(:parent_floor_unsaved),
+    do: gettext("its parent floor was not saved (it might need a name)")
+
   def message(:unexpected), do: gettext("An unexpected error occurred.")
 
   def message(reason) when is_binary(reason), do: reason
