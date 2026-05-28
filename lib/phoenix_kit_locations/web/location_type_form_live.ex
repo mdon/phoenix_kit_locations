@@ -147,7 +147,6 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
     ~H"""
     <div class="flex flex-col w-full px-4 py-8 gap-6">
       <.admin_page_header
-        back={Paths.types()}
         title={@page_title}
         subtitle={if @action == :new, do: gettext("Create a new location type for categorizing locations."), else: gettext("Update location type details.")}
       />

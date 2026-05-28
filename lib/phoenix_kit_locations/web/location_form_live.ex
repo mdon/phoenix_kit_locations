@@ -1316,7 +1316,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       />
 
       <.admin_page_header
-        back={Paths.index()}
         title={@page_title}
         subtitle={if @action == :new, do: gettext("Add a new location."), else: gettext("Update location details.")}
       />
