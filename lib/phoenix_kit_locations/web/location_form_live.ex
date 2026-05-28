@@ -13,13 +13,18 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   import PhoenixKitWeb.Components.Core.Select
   import PhoenixKitWeb.Components.Core.Textarea
 
+  alias PhoenixKit.Modules.Storage.URLSigner
+  alias PhoenixKitLocations.Attachments
   alias PhoenixKitLocations.Errors
   alias PhoenixKitLocations.Locations
   alias PhoenixKitLocations.Paths
-  alias PhoenixKitLocations.Schemas.Location
+  alias PhoenixKitLocations.Schemas.{Location, Space}
+  alias PhoenixKitLocations.Spaces
 
   @translatable_fields ["name", "description", "public_notes"]
+  @space_translatable_fields ["name", "description"]
   @preserve_fields %{"status" => :status}
+  @space_preserve_fields %{"status" => :status, "kind" => :kind, "parent_uuid" => :parent_uuid}
 
   # Feature keys are paired with a translatable label at render time via
   # `feature_label/1` — keeping the call site literal is what lets
@@ -64,8 +69,76 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
            address_warning: nil
          )
          |> assign_form(changeset)
-         |> mount_multilang()}
+         |> mount_multilang()
+         |> Attachments.mount_attachments(location)
+         |> Attachments.allow_attachment_upload()
+         |> assign_spaces_state(action, location)}
     end
+  end
+
+  # ── Spaces state ─────────────────────────────────────────────────
+
+  # On :new, spaces don't exist yet (location not persisted) — show
+  # nothing. On :edit, load the tree-walk list and select the first
+  # space as the active tab (or :new for the blank-form tab when the
+  # location has no spaces yet). The list query is rescued so a
+  # missing migration (V122 not yet applied) doesn't blow up the form.
+  defp assign_spaces_state(socket, :new, _location) do
+    assign(socket,
+      spaces: [],
+      active_space_uuid: nil,
+      space: nil,
+      space_changeset: nil,
+      space_form: nil
+    )
+  end
+
+  defp assign_spaces_state(socket, :edit, location) do
+    spaces = safe_list_spaces(location.uuid)
+
+    active =
+      case spaces do
+        [] -> :new
+        [first | _] -> first.uuid
+      end
+
+    assign_active_space(socket, spaces, active, location.uuid)
+  end
+
+  defp safe_list_spaces(location_uuid) do
+    Spaces.list_for_location(location_uuid)
+  rescue
+    e in [Postgrex.Error, DBConnection.ConnectionError, Ecto.QueryError] ->
+      Logger.warning("[LocationFormLive] list spaces failed: #{Exception.message(e)}")
+      []
+  end
+
+  defp assign_active_space(socket, spaces, :new, location_uuid) do
+    space = %Space{location_uuid: location_uuid, kind: "room", status: "active"}
+    cs = Spaces.change_space(space)
+
+    socket
+    |> assign(spaces: spaces, active_space_uuid: :new, space: space)
+    |> assign_space_form(cs)
+  end
+
+  defp assign_active_space(socket, spaces, uuid, _location_uuid) do
+    case Enum.find(spaces, &(&1.uuid == uuid)) do
+      nil ->
+        # UUID no longer in the list (just deleted, etc.) — fall back to :new.
+        assign_active_space(socket, spaces, :new, socket.assigns.location.uuid)
+
+      space ->
+        cs = Spaces.change_space(space)
+
+        socket
+        |> assign(spaces: spaces, active_space_uuid: uuid, space: space)
+        |> assign_space_form(cs)
+    end
+  end
+
+  defp assign_space_form(socket, %Ecto.Changeset{} = cs) do
+    assign(socket, space_changeset: cs, space_form: to_form(cs, as: :space))
   end
 
   defp load_location(:new, _params) do
@@ -188,14 +261,135 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         preserve_fields: @preserve_fields
       )
 
-    params = Map.put(params, "features", socket.assigns.features)
+    params =
+      params
+      |> Map.put("features", socket.assigns.features)
+      |> Attachments.inject_attachment_data(socket)
 
     save_location(socket, socket.assigns.action, params)
+  end
+
+  # ── Attachments (featured image modal + inline files dropzone) ──
+
+  def handle_event("open_featured_image_picker", _params, socket),
+    do: Attachments.open_featured_image_picker(socket)
+
+  def handle_event("close_media_selector", _params, socket),
+    do: {:noreply, Attachments.close_media_selector(socket)}
+
+  def handle_event("cancel_upload", %{"ref" => ref}, socket),
+    do: Attachments.cancel_attachment_upload(socket, ref)
+
+  def handle_event("remove_file", %{"uuid" => uuid}, socket),
+    do: Attachments.trash_file(socket, uuid)
+
+  def handle_event("clear_featured_image", _params, socket),
+    do: Attachments.clear_featured_image(socket)
+
+  # ── Spaces (sub-form within the Location page on :edit) ─────────
+
+  def handle_event("select_space", %{"uuid" => "new"}, socket) do
+    {:noreply,
+     assign_active_space(socket, socket.assigns.spaces, :new, socket.assigns.location.uuid)}
+  end
+
+  def handle_event("select_space", %{"uuid" => uuid}, socket) do
+    {:noreply,
+     assign_active_space(socket, socket.assigns.spaces, uuid, socket.assigns.location.uuid)}
+  end
+
+  def handle_event("validate_space", %{"space" => params}, socket) do
+    params =
+      merge_translatable_params(params, socket, @space_translatable_fields,
+        changeset: socket.assigns.space_changeset,
+        preserve_fields: @space_preserve_fields
+      )
+
+    cs =
+      socket.assigns.space
+      |> Spaces.change_space(params)
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign_space_form(socket, cs)}
+  end
+
+  def handle_event("save_space", %{"space" => params}, socket) do
+    params =
+      params
+      |> merge_translatable_params(socket, @space_translatable_fields,
+        changeset: socket.assigns.space_changeset,
+        preserve_fields: @space_preserve_fields
+      )
+      |> Map.put("location_uuid", socket.assigns.location.uuid)
+      |> normalize_parent_uuid()
+
+    result =
+      case socket.assigns.active_space_uuid do
+        :new -> Spaces.create_space(params, actor_opts(socket))
+        _uuid -> Spaces.update_space(socket.assigns.space, params, actor_opts(socket))
+      end
+
+    handle_space_save_result(socket, result)
+  end
+
+  def handle_event("delete_space", _params, socket) do
+    case socket.assigns.active_space_uuid do
+      :new ->
+        # No persisted row — just reset the blank form.
+        {:noreply,
+         assign_active_space(socket, socket.assigns.spaces, :new, socket.assigns.location.uuid)}
+
+      _uuid ->
+        case Spaces.delete_space(socket.assigns.space, actor_opts(socket)) do
+          {:ok, _} ->
+            spaces = safe_list_spaces(socket.assigns.location.uuid)
+
+            next_active =
+              case spaces do
+                [] -> :new
+                [first | _] -> first.uuid
+              end
+
+            {:noreply,
+             socket
+             |> put_flash(:info, gettext("Space deleted."))
+             |> assign_active_space(spaces, next_active, socket.assigns.location.uuid)}
+
+          {:error, _reason} ->
+            {:noreply, put_flash(socket, :error, gettext("Could not delete space."))}
+        end
+    end
+  end
+
+  # Form params arrive with `""` for the empty parent <select> option;
+  # map that to `nil` so context-side validation doesn't try to look up
+  # the empty-string "uuid". Same shape catalogue uses for its picker.
+  defp normalize_parent_uuid(%{"parent_uuid" => ""} = params),
+    do: Map.put(params, "parent_uuid", nil)
+
+  defp normalize_parent_uuid(params), do: params
+
+  defp handle_space_save_result(socket, {:ok, saved}) do
+    spaces = safe_list_spaces(socket.assigns.location.uuid)
+
+    {:noreply,
+     socket
+     |> put_flash(:info, gettext("Space saved."))
+     |> assign_active_space(spaces, saved.uuid, socket.assigns.location.uuid)}
+  end
+
+  defp handle_space_save_result(socket, {:error, %Ecto.Changeset{} = cs}) do
+    {:noreply, assign_space_form(socket, Map.put(cs, :action, :validate))}
+  end
+
+  defp handle_space_save_result(socket, {:error, reason}) do
+    {:noreply, put_flash(socket, :error, Errors.message(reason))}
   end
 
   defp save_location(socket, :new, params) do
     case Locations.create_location(params, actor_opts(socket)) do
       {:ok, location} ->
+        _ = Attachments.maybe_rename_pending_folder(socket, location)
         sync_types_and_redirect(socket, location.uuid, gettext("Location created."))
 
       {:error, changeset} ->
@@ -213,10 +407,16 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     end
   end
 
+  @impl true
+  def handle_info({:media_selected, file_uuids}, socket),
+    do: Attachments.handle_media_selected(socket, file_uuids)
+
+  def handle_info({:media_selector_closed}, socket),
+    do: {:noreply, Attachments.close_media_selector(socket)}
+
   # Defensive catch-all for unmatched messages — e.g. future PubSub
   # broadcasts, multilang hook fall-throughs. Logs at :debug per the
   # workspace sync precedent at AGENTS.md:678-680.
-  @impl true
   def handle_info(msg, socket) do
     Logger.debug("[LocationFormLive] ignoring unrelated message: #{inspect(msg)}")
     {:noreply, socket}
@@ -253,6 +453,20 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
 
     ~H"""
     <div class="flex flex-col mx-auto max-w-2xl px-4 py-8 gap-6">
+      <%!-- Folder-scoped media selector (featured-image picker). Inline
+           files dropzone in the Files card below uses the LV upload
+           channel directly — modal is featured-image-only for now. --%>
+      <.live_component
+        module={PhoenixKitWeb.Live.Components.MediaSelectorModal}
+        id="location-form-media-selector"
+        show={@show_media_selector}
+        mode={@media_selection_mode}
+        file_type_filter={@media_filter}
+        selected_uuids={@media_selected_uuids}
+        scope_folder_id={@files_folder_uuid}
+        phoenix_kit_current_user={assigns[:phoenix_kit_current_user]}
+      />
+
       <.admin_page_header
         back={Paths.index()}
         title={@page_title}
@@ -428,6 +642,179 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         </div>
 
         <%!-- ═══════════════════════════════════════════════════════ --%>
+        <%!-- FILES & FEATURED IMAGE                                --%>
+        <%!-- ═══════════════════════════════════════════════════════ --%>
+        <div class="card bg-base-100 shadow-lg mt-6">
+          <div class="card-body flex flex-col gap-4">
+            <div class="flex items-center justify-between">
+              <h2 class="text-base font-semibold text-base-content/80 flex items-center gap-2">
+                <.icon name="hero-photo" class="w-4 h-4" /> {gettext("Featured Image")}
+              </h2>
+              <span class="text-xs text-base-content/50">
+                {gettext("Shown alongside this location in listings.")}
+              </span>
+            </div>
+
+            <%= if @featured_image_file do %>
+              <div class="flex items-center gap-4">
+                <a
+                  href={URLSigner.signed_url(@featured_image_uuid, "original")}
+                  target="_blank"
+                  rel="noopener"
+                  class="shrink-0"
+                  title={gettext("Open original")}
+                >
+                  <img
+                    src={URLSigner.signed_url(@featured_image_uuid, "thumbnail")}
+                    alt={@featured_image_file.original_file_name}
+                    class="w-24 h-24 rounded-md object-cover bg-base-200 border border-base-300"
+                  />
+                </a>
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium truncate">{@featured_image_file.original_file_name}</p>
+                  <p class="text-xs text-base-content/50">{Attachments.format_file_size(@featured_image_file.size)}</p>
+                </div>
+                <div class="flex flex-col gap-2">
+                  <button type="button" phx-click="open_featured_image_picker" class="btn btn-sm btn-outline">
+                    {gettext("Change")}
+                  </button>
+                  <button
+                    type="button"
+                    phx-click="clear_featured_image"
+                    phx-disable-with={gettext("Removing...")}
+                    class="btn btn-sm btn-ghost"
+                  >
+                    {gettext("Remove")}
+                  </button>
+                </div>
+              </div>
+            <% else %>
+              <div class="flex items-center justify-between py-4 border border-dashed border-base-300 rounded-md px-4">
+                <div class="flex items-center gap-3 text-base-content/60">
+                  <.icon name="hero-photo" class="w-6 h-6" />
+                  <span class="text-sm">{gettext("No featured image set.")}</span>
+                </div>
+                <button type="button" phx-click="open_featured_image_picker" class="btn btn-sm btn-primary">
+                  <.icon name="hero-plus" class="w-4 h-4 mr-1" /> {gettext("Set featured image")}
+                </button>
+              </div>
+            <% end %>
+
+            <div class="divider my-0"></div>
+
+            <div class="flex flex-col gap-0.5">
+              <h2 class="text-base font-semibold text-base-content/80 flex items-center gap-2">
+                <.icon name="hero-paper-clip" class="w-4 h-4" /> {gettext("Attached Files")}
+                <span :if={@files_state.files != []} class="badge badge-sm badge-ghost ml-1">
+                  {length(@files_state.files)}
+                </span>
+              </h2>
+              <p class="text-xs text-base-content/50">
+                {gettext("Floor plans, brochures, certificates. Any file type is accepted.")}
+              </p>
+            </div>
+
+            <label
+              for={@uploads.attachment_files.ref}
+              class="flex flex-col items-center justify-center gap-2 py-6 border-2 border-dashed border-base-300 rounded-md bg-base-200/20 hover:bg-base-200/40 transition-colors cursor-pointer"
+              phx-drop-target={@uploads.attachment_files.ref}
+            >
+              <.icon name="hero-cloud-arrow-up" class="w-8 h-8 text-base-content/40" />
+              <div class="text-sm text-base-content/60">
+                <span class="font-medium text-primary">{gettext("Click to upload")}</span>
+                <span>{gettext(" or drag & drop")}</span>
+              </div>
+              <.live_file_input upload={@uploads.attachment_files} class="hidden" />
+            </label>
+
+            <div :if={@uploads.attachment_files.entries != []} class="flex flex-col gap-2">
+              <div
+                :for={entry <- @uploads.attachment_files.entries}
+                class="flex items-center gap-3 rounded-md border border-base-300 bg-base-100 p-2"
+              >
+                <.icon name="hero-cloud-arrow-up" class="w-4 h-4 text-base-content/60 shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm truncate">{entry.client_name}</p>
+                  <progress class="progress progress-primary w-full h-1 mt-1" value={entry.progress} max="100"></progress>
+                </div>
+                <span class="text-xs text-base-content/50 tabular-nums">{entry.progress}%</span>
+                <button
+                  type="button"
+                  phx-click="cancel_upload"
+                  phx-value-ref={entry.ref}
+                  class="btn btn-ghost btn-xs btn-square"
+                  title={gettext("Cancel")}
+                >
+                  <.icon name="hero-x-mark" class="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <p :for={err <- upload_errors(@uploads.attachment_files)} class="text-xs text-error">
+              {Attachments.upload_error_message(err)}
+            </p>
+
+            <%= if @files_state.files == [] do %>
+              <div class="flex flex-col items-center gap-2 py-10 text-center border border-dashed border-base-300 rounded-md">
+                <.icon name="hero-paper-clip" class="w-8 h-8 text-base-content/30" />
+                <p class="text-sm text-base-content/50">{gettext("No files attached yet.")}</p>
+              </div>
+            <% else %>
+              <ul class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <li
+                  :for={file <- @files_state.files}
+                  class="flex items-center gap-3 rounded-md border border-base-300 bg-base-200/30 p-3"
+                >
+                  <%= if file.file_type == "image" do %>
+                    <a
+                      href={URLSigner.signed_url(file.uuid, "original")}
+                      target="_blank"
+                      rel="noopener"
+                      class="shrink-0"
+                    >
+                      <img
+                        src={URLSigner.signed_url(file.uuid, "thumbnail")}
+                        alt={file.original_file_name}
+                        class="w-14 h-14 rounded object-cover bg-base-200 border border-base-300"
+                      />
+                    </a>
+                  <% else %>
+                    <a
+                      href={URLSigner.signed_url(file.uuid, "original")}
+                      target="_blank"
+                      rel="noopener"
+                      class="shrink-0 flex items-center justify-center w-14 h-14 rounded bg-base-200 border border-base-300 text-base-content/60"
+                      title={gettext("Download")}
+                    >
+                      <.icon name={Attachments.file_icon(file)} class="w-6 h-6" />
+                    </a>
+                  <% end %>
+                  <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium truncate" title={file.original_file_name}>
+                      {file.original_file_name}
+                    </p>
+                    <p class="text-xs text-base-content/50">
+                      {Attachments.format_file_size(file.size)} · {file.file_type}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    phx-click="remove_file"
+                    phx-value-uuid={file.uuid}
+                    phx-disable-with={gettext("Removing...")}
+                    data-confirm={gettext("Remove this file from the location? If it's not attached to any other resource, it will be moved to trash (admins can restore).")}
+                    class="btn btn-ghost btn-xs btn-square"
+                    title={gettext("Remove from location")}
+                  >
+                    <.icon name="hero-x-mark" class="w-4 h-4" />
+                  </button>
+                </li>
+              </ul>
+            <% end %>
+          </div>
+        </div>
+
+        <%!-- ═══════════════════════════════════════════════════════ --%>
         <%!-- INTERNAL                                               --%>
         <%!-- ═══════════════════════════════════════════════════════ --%>
         <div class="card bg-base-100 shadow-lg mt-6">
@@ -492,14 +879,175 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
               <button
                 type="submit"
                 class="btn btn-primary phx-submit-loading:opacity-75"
+                disabled={@uploads.attachment_files.entries != []}
                 phx-disable-with={if @action == :new, do: gettext("Creating..."), else: gettext("Saving...")}
               >
-                {if @action == :new, do: gettext("Create Location"), else: gettext("Save Changes")}
+                {cond do
+                  @uploads.attachment_files.entries != [] -> gettext("Waiting for uploads...")
+                  @action == :new -> gettext("Create Location")
+                  true -> gettext("Save Changes")
+                end}
               </button>
             </div>
           </div>
         </div>
       </.form>
+
+      <%!-- ═══════════════════════════════════════════════════════ --%>
+      <%!-- SPACES (rooms / floors / zones) — edit mode only       --%>
+      <%!-- ═══════════════════════════════════════════════════════ --%>
+      <%= if @action == :edit do %>
+        {render_spaces_section(assigns)}
+      <% end %>
+    </div>
+    """
+  end
+
+  # The Spaces section is its own `<.form>` element — a sibling of the
+  # Location form, NOT nested (HTML forbids nested forms). Each space
+  # has its own validate/save cycle; the Location's Save button doesn't
+  # bundle space changes.
+  defp render_spaces_section(assigns) do
+    assigns =
+      assigns
+      |> assign(
+        :space_lang_data,
+        space_lang_data(assigns[:space_changeset], assigns.current_lang, assigns.multilang_enabled)
+      )
+      |> assign(:parent_options, parent_options(assigns.spaces, assigns[:active_space_uuid]))
+      |> assign(:kind_options, kind_options())
+
+    ~H"""
+    <div class="card bg-base-100 shadow-lg">
+      <div class="card-body flex flex-col gap-4">
+        <div class="flex flex-col gap-0.5">
+          <h2 class="text-base font-semibold text-base-content/80 flex items-center gap-2">
+            <.icon name="hero-squares-2x2" class="w-4 h-4" /> {gettext("Spaces")}
+            <span :if={@spaces != []} class="badge badge-sm badge-ghost ml-1">
+              {length(@spaces)}
+            </span>
+          </h2>
+          <p class="text-xs text-base-content/50">
+            {gettext("Break this location into rooms, floors, or zones. Each space can have its own name, description, and parent.")}
+          </p>
+        </div>
+
+        <%!-- Tab strip — one tab per space + "+" to add. Active tab
+             is the one whose form renders below. --%>
+        <div role="tablist" class="tabs tabs-bordered overflow-x-auto flex-nowrap">
+          <button
+            :for={s <- @spaces}
+            type="button"
+            phx-click="select_space"
+            phx-value-uuid={s.uuid}
+            class={[
+              "tab whitespace-nowrap",
+              if(@active_space_uuid == s.uuid, do: "tab-active", else: "")
+            ]}
+            title={space_tab_label(s, @spaces)}
+          >
+            <span class="text-xs">{space_tab_label(s, @spaces)}</span>
+          </button>
+          <button
+            type="button"
+            phx-click="select_space"
+            phx-value-uuid="new"
+            class={[
+              "tab whitespace-nowrap",
+              if(@active_space_uuid == :new, do: "tab-active", else: "")
+            ]}
+          >
+            <.icon name="hero-plus" class="w-4 h-4 mr-1" />
+            <span class="text-xs">{gettext("Add space")}</span>
+          </button>
+        </div>
+
+        <.form
+          for={@space_form}
+          action="#"
+          phx-change="validate_space"
+          phx-submit="save_space"
+          class="flex flex-col gap-4"
+        >
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <.select
+              field={@space_form[:kind]}
+              label={gettext("Kind")}
+              options={@kind_options}
+            />
+            <.select
+              field={@space_form[:parent_uuid]}
+              label={gettext("Parent space (optional)")}
+              options={@parent_options}
+            />
+          </div>
+
+          <.translatable_field
+            field_name="name"
+            form_prefix="space"
+            changeset={@space_changeset}
+            schema_field={:name}
+            multilang_enabled={@multilang_enabled}
+            current_lang={@current_lang}
+            primary_language={@primary_language}
+            lang_data={@space_lang_data}
+            label={gettext("Name")}
+            placeholder={gettext("e.g., Floor 2, Conference Room, Storage Zone A")}
+            required
+            class="w-full"
+          />
+
+          <.translatable_field
+            field_name="description"
+            form_prefix="space"
+            changeset={@space_changeset}
+            schema_field={:description}
+            multilang_enabled={@multilang_enabled}
+            current_lang={@current_lang}
+            primary_language={@primary_language}
+            lang_data={@space_lang_data}
+            label={gettext("Description")}
+            type="textarea"
+            placeholder={gettext("Brief description of this space...")}
+            class="w-full"
+          />
+
+          <.textarea
+            field={@space_form[:notes]}
+            label={gettext("Internal Notes")}
+            rows="2"
+            placeholder={gettext("Admin-only notes...")}
+            class="min-h-[4rem]"
+          />
+
+          <.select
+            field={@space_form[:status]}
+            label={gettext("Status")}
+            options={[{gettext("Active"), "active"}, {gettext("Inactive"), "inactive"}]}
+          />
+
+          <div class="flex justify-between items-center pt-2">
+            <button
+              :if={@active_space_uuid != :new}
+              type="button"
+              phx-click="delete_space"
+              data-confirm={gettext("Delete this space and any of its sub-spaces? This cannot be undone.")}
+              class="btn btn-ghost btn-sm text-error"
+            >
+              <.icon name="hero-trash" class="w-4 h-4 mr-1" /> {gettext("Delete")}
+            </button>
+            <div :if={@active_space_uuid == :new} />
+
+            <button
+              type="submit"
+              class="btn btn-primary btn-sm phx-submit-loading:opacity-75"
+              phx-disable-with={gettext("Saving...")}
+            >
+              {if @active_space_uuid == :new, do: gettext("Add Space"), else: gettext("Save Space")}
+            </button>
+          </div>
+        </.form>
+      </div>
     </div>
     """
   end
@@ -540,4 +1088,77 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp feature_label("security"), do: gettext("24/7 Security")
   defp feature_label("cctv"), do: gettext("CCTV")
   defp feature_label(key), do: key
+
+  # ── Space helpers ────────────────────────────────────────────────
+
+  # Translatable kind labels — each literal is picked up by
+  # `mix gettext.extract`. Stored value is always the lowercase string
+  # from `Space.kinds()`.
+  defp kind_label("floor"), do: gettext("Floor")
+  defp kind_label("room"), do: gettext("Room")
+  defp kind_label("hall"), do: gettext("Hall")
+  defp kind_label("suite"), do: gettext("Suite")
+  defp kind_label("section"), do: gettext("Section")
+  defp kind_label("zone"), do: gettext("Zone")
+  defp kind_label("aisle"), do: gettext("Aisle")
+  defp kind_label("shelf"), do: gettext("Shelf")
+  defp kind_label("corner"), do: gettext("Corner")
+  defp kind_label(other), do: other
+
+  defp kind_options do
+    Enum.map(Space.kinds(), fn k -> {kind_label(k), k} end)
+  end
+
+  # Builds "Kind: Name" labels with " → " breadcrumb prefix for nested
+  # spaces. Bounded walk so a corrupted parent chain can't spin forever.
+  defp space_tab_label(%Space{} = space, spaces) do
+    own = "#{kind_label(space.kind)}: #{space.name || gettext("(unnamed)")}"
+
+    case breadcrumb_prefix(space.parent_uuid, spaces, 32) do
+      "" -> own
+      prefix -> "#{prefix} → #{own}"
+    end
+  end
+
+  defp breadcrumb_prefix(nil, _spaces, _hops_remaining), do: ""
+  defp breadcrumb_prefix(_uuid, _spaces, 0), do: "…"
+
+  defp breadcrumb_prefix(uuid, spaces, hops_remaining) do
+    case Enum.find(spaces, &(&1.uuid == uuid)) do
+      nil ->
+        ""
+
+      parent ->
+        own = "#{kind_label(parent.kind)}: #{parent.name || gettext("(unnamed)")}"
+
+        case breadcrumb_prefix(parent.parent_uuid, spaces, hops_remaining - 1) do
+          "" -> own
+          prefix -> "#{prefix} → #{own}"
+        end
+    end
+  end
+
+  # Parent picker options: all spaces in this location EXCEPT the
+  # active one. Indirect cycles are blocked by `Spaces.update_space/3`
+  # at save time — we don't try to compute descendants here to keep
+  # render cheap.
+  defp parent_options(spaces, active_uuid) do
+    root = {gettext("— None (top level) —"), ""}
+
+    children =
+      spaces
+      |> Enum.reject(fn s -> s.uuid == active_uuid end)
+      |> Enum.map(fn s -> {space_tab_label(s, spaces), s.uuid} end)
+
+    [root | children]
+  end
+
+  # Mirrors `get_lang_data/3` from MultilangForm but tolerant of a nil
+  # changeset (on :new the spaces state is not initialised). Returns
+  # an empty map when no changeset — the translatable_field component
+  # treats that as "no overrides," falling back to primary values.
+  defp space_lang_data(nil, _current_lang, _multilang_enabled), do: %{}
+
+  defp space_lang_data(changeset, current_lang, multilang_enabled),
+    do: get_lang_data(changeset, current_lang, multilang_enabled)
 end
