@@ -456,10 +456,7 @@ defmodule PhoenixKitLocations.Attachments do
     do: Gettext.gettext(PhoenixKitWeb.Gettext, "Too many files.")
 
   def upload_error_message(other),
-    do:
-      Gettext.gettext(PhoenixKitWeb.Gettext, "Upload error: %{reason}",
-        reason: inspect(other)
-      )
+    do: Gettext.gettext(PhoenixKitWeb.Gettext, "Upload error: %{reason}", reason: inspect(other))
 
   # ═══════════════════════════════════════════════════════════════════
   # Internals — per-scope state updates

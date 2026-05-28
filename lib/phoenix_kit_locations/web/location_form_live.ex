@@ -477,10 +477,15 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     fields = invalid_field_keys(draft.changeset)
 
     cond do
-      :name in fields -> gettext("%{label} needs a name", label: identifier)
-      fields == [] -> gettext("%{label} needs attention", label: identifier)
+      :name in fields ->
+        gettext("%{label} needs a name", label: identifier)
+
+      fields == [] ->
+        gettext("%{label} needs attention", label: identifier)
+
       true ->
         first_field = hd(fields)
+
         gettext("%{label} has an invalid %{field}",
           label: identifier,
           field: humanize_field(first_field)
@@ -525,7 +530,9 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       nil ->
         rooms =
           all_drafts
-          |> Enum.filter(&(&1.space.kind == "room" and parent_id_of(&1) == parent_id and not &1.deleted))
+          |> Enum.filter(
+            &(&1.space.kind == "room" and parent_id_of(&1) == parent_id and not &1.deleted)
+          )
 
         position = (Enum.find_index(rooms, &(&1.id == draft.id)) || 0) + 1
         gettext("Room %{n} in %{floor}", n: position, floor: floor_label)
@@ -827,7 +834,9 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         location_folder = Attachments.state(socket, location_scope()).folder_uuid
         _ = Attachments.maybe_rename_pending_folder_for(location_folder, location)
 
-        {flash, failed_ids} = persist_space_drafts(socket.assigns.space_drafts, location.uuid, socket)
+        {flash, failed_ids} =
+          persist_space_drafts(socket.assigns.space_drafts, location.uuid, socket)
+
         finish_save(socket, location, gettext("Location created."), flash, failed_ids)
 
       {:error, changeset} ->
@@ -838,7 +847,9 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp save_location(socket, :edit, params) do
     case Locations.update_location(socket.assigns.location, params, actor_opts(socket)) do
       {:ok, location} ->
-        {flash, failed_ids} = persist_space_drafts(socket.assigns.space_drafts, location.uuid, socket)
+        {flash, failed_ids} =
+          persist_space_drafts(socket.assigns.space_drafts, location.uuid, socket)
+
         finish_save(socket, location, gettext("Location updated."), flash, failed_ids)
 
       {:error, changeset} ->
@@ -1152,6 +1163,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp scope_has_attachment_changes?(socket, scope, %Space{} = space) do
     st = Attachments.state(socket, scope)
     data = space.data || %{}
+
     Map.get(data, "files_folder_uuid") != st.folder_uuid or
       Map.get(data, "featured_image_uuid") != st.featured_image_uuid
   end
@@ -1626,7 +1638,12 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   # handler can route via active_room_id || active_floor_id).
   defp render_spaces_section(assigns) do
     floors = floor_drafts(assigns.space_drafts)
-    active_floor = if assigns.active_floor_id, do: find_draft(assigns.space_drafts, assigns.active_floor_id), else: nil
+
+    active_floor =
+      if assigns.active_floor_id,
+        do: find_draft(assigns.space_drafts, assigns.active_floor_id),
+        else: nil
+
     active_floor = if active_floor && active_floor.deleted, do: nil, else: active_floor
 
     active_room =
@@ -2005,12 +2022,12 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   # event button. The single shared upload config is owned by the
   # parent LV; each dropzone here also sets `:active_upload_scope`
   # on click so the upload routes to the right folder.
-  attr :scope, :string, required: true
-  attr :state, :map, required: true, doc: "Map from `Attachments.state/2`"
-  attr :uploads, :map, required: true
-  attr :featured_subtitle, :string, default: nil
-  attr :files_subtitle, :string, default: nil
-  attr :remove_file_confirm, :string, default: nil
+  attr(:scope, :string, required: true)
+  attr(:state, :map, required: true, doc: "Map from `Attachments.state/2`")
+  attr(:uploads, :map, required: true)
+  attr(:featured_subtitle, :string, default: nil)
+  attr(:files_subtitle, :string, default: nil)
+  attr(:remove_file_confirm, :string, default: nil)
 
   defp files_card_body(assigns) do
     assigns =
@@ -2022,7 +2039,9 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         gettext("Floor plans, brochures, certificates. Any file type is accepted.")
       end)
       |> Phoenix.Component.assign_new(:remove_file_confirm, fn ->
-        gettext("Remove this file? If it's not attached to any other resource, it will be moved to trash (admins can restore).")
+        gettext(
+          "Remove this file? If it's not attached to any other resource, it will be moved to trash (admins can restore)."
+        )
       end)
 
     ~H"""
@@ -2217,8 +2236,8 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   # switch updates only the active draft's `current_lang` — NOT the
   # page-level `:current_lang` that drives the Location's own
   # multilang_tabs at the top of the form.
-  attr :language_tabs, :list, required: true
-  attr :current_lang, :string, required: true
+  attr(:language_tabs, :list, required: true)
+  attr(:current_lang, :string, required: true)
 
   defp draft_language_strip(assigns) do
     ~H"""
