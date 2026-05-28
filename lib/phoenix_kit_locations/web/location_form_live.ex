@@ -678,10 +678,17 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> Enum.filter(&(&1.persisted? and &1.deleted))
       |> MapSet.new(& &1.id)
 
-    {floor_errors, id_map} = persist_floor_drafts(floors, location_uuid, opts, socket)
+    {floor_errors, id_map, skipped_floor_ids} =
+      persist_floor_drafts(floors, location_uuid, opts, socket)
+
+    # Rooms parented to either a deleting floor (CASCADE handles them)
+    # or a silently-skipped floor (blank name; the parent uuid was
+    # never resolved) need to be skipped too — otherwise they'd
+    # cascade-fail with `:parent_in_other_location`.
+    skip_parent_floor_ids = MapSet.union(deleting_floor_ids, skipped_floor_ids)
 
     room_errors =
-      persist_room_drafts(rooms, deleting_floor_ids, id_map, location_uuid, opts, socket)
+      persist_room_drafts(rooms, skip_parent_floor_ids, id_map, location_uuid, opts, socket)
 
     case floor_errors ++ room_errors do
       [] -> nil
@@ -690,11 +697,12 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   end
 
   defp persist_floor_drafts(floors, location_uuid, opts, socket) do
-    Enum.reduce(floors, {[], %{}}, fn floor, {errors, id_map} ->
+    Enum.reduce(floors, {[], %{}, MapSet.new()}, fn floor, {errors, id_map, skipped} ->
       case persist_floor(floor, location_uuid, opts, socket) do
-        :ok -> {errors, id_map}
-        {:created, new_uuid} -> {errors, Map.put(id_map, floor.id, new_uuid)}
-        {:error, _, _} = err -> {[err | errors], id_map}
+        :ok -> {errors, id_map, skipped}
+        :skipped -> {errors, id_map, MapSet.put(skipped, floor.id)}
+        {:created, new_uuid} -> {errors, Map.put(id_map, floor.id, new_uuid), skipped}
+        {:error, _, _} = err -> {[err | errors], id_map, skipped}
       end
     end)
   end
@@ -717,14 +725,27 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> Map.put("parent_uuid", nil)
       |> Attachments.inject_attachment_data(socket, floor.id)
 
-    case Spaces.create_space(attrs, opts) do
-      {:ok, saved} ->
-        st = Attachments.state(socket, floor.id)
-        _ = Attachments.maybe_rename_pending_folder_for(st.folder_uuid, saved)
-        {:created, saved.uuid}
+    cond do
+      # Blank-name new draft = almost certainly an abandoned "+ Add
+      # floor" click the user forgot to fill in (or accidentally
+      # double-clicked). Silently skip instead of bubbling an
+      # confusing "Name can't be blank" error to the save flash AND
+      # cascade-failing every room underneath. Returning :skipped
+      # lets the floor pass collect this id so room-pass can also
+      # skip orphaned rooms.
+      blank_required_field?(attrs) ->
+        :skipped
 
-      {:error, reason} ->
-        {:error, floor.id, reason}
+      true ->
+        case Spaces.create_space(attrs, opts) do
+          {:ok, saved} ->
+            st = Attachments.state(socket, floor.id)
+            _ = Attachments.maybe_rename_pending_folder_for(st.folder_uuid, saved)
+            {:created, saved.uuid}
+
+          {:error, reason} ->
+            {:error, floor.id, reason}
+        end
     end
   end
 
@@ -789,14 +810,21 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> Map.put("parent_uuid", parent_uuid)
       |> Attachments.inject_attachment_data(socket, room.id)
 
-    case Spaces.create_space(attrs, opts) do
-      {:ok, saved} ->
-        st = Attachments.state(socket, room.id)
-        _ = Attachments.maybe_rename_pending_folder_for(st.folder_uuid, saved)
+    cond do
+      # Same silent-skip semantics as floors (see persist_floor).
+      blank_required_field?(attrs) ->
         :ok
 
-      {:error, reason} ->
-        {:error, room.id, reason}
+      true ->
+        case Spaces.create_space(attrs, opts) do
+          {:ok, saved} ->
+            st = Attachments.state(socket, room.id)
+            _ = Attachments.maybe_rename_pending_folder_for(st.folder_uuid, saved)
+            :ok
+
+          {:error, reason} ->
+            {:error, room.id, reason}
+        end
     end
   end
 
@@ -858,9 +886,47 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     }
   end
 
-  defp draft_error_summary(errors) do
-    gettext("Location saved, but %{count} space(s) failed to save.", count: length(errors))
+  defp blank_required_field?(attrs) do
+    name = Map.get(attrs, "name") || Map.get(attrs, :name)
+    is_nil(name) or (is_binary(name) and String.trim(name) == "")
   end
+
+  # Distills the list of `{:error, draft_id, reason}` tuples into a
+  # single short flash. Changeset errors surface their actual
+  # validation messages so the user knows what to fix, instead of
+  # the previous "N failed" with no hint why.
+  defp draft_error_summary(errors) do
+    details =
+      errors
+      |> Enum.map(fn {:error, _id, reason} -> format_draft_error_reason(reason) end)
+      |> Enum.frequencies()
+      |> Enum.map(fn
+        {msg, 1} -> msg
+        {msg, n} -> "#{n}× #{msg}"
+      end)
+      |> Enum.join("; ")
+
+    gettext("Location saved, but %{count} space(s) failed: %{details}",
+      count: length(errors),
+      details: details
+    )
+  end
+
+  defp format_draft_error_reason(%Ecto.Changeset{} = cs) do
+    cs
+    |> Ecto.Changeset.traverse_errors(fn {msg, opts} ->
+      Enum.reduce(opts, msg, fn {k, v}, acc ->
+        String.replace(acc, "%{#{k}}", to_string(v))
+      end)
+    end)
+    |> Enum.map_join(", ", fn {field, msgs} -> "#{field} #{Enum.join(msgs, " / ")}" end)
+  end
+
+  defp format_draft_error_reason(reason) when is_atom(reason),
+    do: Errors.message(reason)
+
+  defp format_draft_error_reason(reason),
+    do: inspect(reason)
 
   @impl true
   def handle_info({:media_selected, file_uuids}, socket),
