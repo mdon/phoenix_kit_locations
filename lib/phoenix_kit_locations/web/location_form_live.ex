@@ -359,19 +359,118 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   end
 
   def handle_event("save", %{"location" => params}, socket) do
-    params =
-      merge_translatable_params(params, socket, @translatable_fields,
-        changeset: socket.assigns.changeset,
-        preserve_fields: @preserve_fields
-      )
+    # Validate space drafts up front. If any have errors, stop here:
+    # don't save the location, mark each failing draft's changeset
+    # with `action: :validate` so inline errors render, and jump the
+    # active tab to the first failing draft so the user sees it. This
+    # is the standard required-field flow — same as if a regular
+    # form field failed validation.
+    {validated_drafts, invalid_drafts} =
+      validate_drafts_for_save(socket.assigns.space_drafts)
 
-    params =
-      params
-      |> Map.put("features", socket.assigns.features)
-      |> Attachments.inject_attachment_data(socket, location_scope())
-      |> merge_running_changes(socket.assigns.changeset)
+    case invalid_drafts do
+      [] ->
+        params =
+          merge_translatable_params(params, socket, @translatable_fields,
+            changeset: socket.assigns.changeset,
+            preserve_fields: @preserve_fields
+          )
 
-    save_location(socket, socket.assigns.action, params)
+        params =
+          params
+          |> Map.put("features", socket.assigns.features)
+          |> Attachments.inject_attachment_data(socket, location_scope())
+          |> merge_running_changes(socket.assigns.changeset)
+
+        save_location(socket, socket.assigns.action, params)
+
+      [first | _] ->
+        {focus_floor, focus_room} = active_focus_for_invalid(first)
+
+        {:noreply,
+         socket
+         |> assign(
+           space_drafts: validated_drafts,
+           active_floor_id: focus_floor,
+           active_room_id: focus_room
+         )
+         |> put_flash(:error, invalid_drafts_flash(invalid_drafts))}
+    end
+  end
+
+  # Rebuilds each draft's changeset with full Space-validation rules
+  # so blank names, etc. surface as errors. Orphan-blank floors are
+  # skipped (they're silently dropped on actual save) so we don't
+  # block on those. Deleted drafts are skipped (they're going away).
+  defp validate_drafts_for_save(drafts) do
+    {floors, rooms} = Enum.split_with(drafts, &(&1.space.kind == "floor"))
+
+    orphan_blank_floor_ids =
+      floors
+      |> Enum.filter(&orphan_blank_floor?(&1, rooms))
+      |> MapSet.new(& &1.id)
+
+    updated =
+      Enum.map(drafts, fn d ->
+        cond do
+          d.deleted -> d
+          d.id in orphan_blank_floor_ids -> d
+          true -> validate_draft_for_save(d)
+        end
+      end)
+
+    invalid = Enum.filter(updated, &draft_has_errors?/1)
+    {updated, invalid}
+  end
+
+  defp validate_draft_for_save(%{changeset: cs} = draft) do
+    # Rebuild the changeset against the full applied attrs so
+    # validate_required/etc. fire. Cast on top of draft.space so
+    # `changes` stays a delta from the persisted baseline (matters
+    # for the "any changes?" check in persist_floor/persist_room).
+    attrs = cs |> Ecto.Changeset.apply_changes() |> space_to_attrs()
+
+    rebuilt =
+      draft.space
+      |> Spaces.change_space(attrs)
+      |> Map.put(:action, :validate)
+
+    %{draft | changeset: rebuilt}
+  end
+
+  defp draft_has_errors?(%{deleted: true}), do: false
+
+  defp draft_has_errors?(%{changeset: cs}),
+    do: cs.action == :validate and not cs.valid?
+
+  # When blocking the save, jump to the first failing draft's tab so
+  # the user actually sees the inline error. For a room, that means
+  # opening its parent floor and then expanding the room editor.
+  defp active_focus_for_invalid(%{space: %{kind: "floor"}, id: id}), do: {id, nil}
+
+  defp active_focus_for_invalid(%{space: %{kind: "room"}} = draft),
+    do: {parent_id_of(draft), draft.id}
+
+  # Short, kind-aware flash. Includes counts when multiple drafts
+  # share the same failure so the message stays readable when the
+  # user has many empty drafts.
+  defp invalid_drafts_flash(invalid_drafts) do
+    kinds =
+      invalid_drafts
+      |> Enum.frequencies_by(& &1.space.kind)
+
+    parts =
+      Enum.map(kinds, fn
+        {"floor", 1} -> gettext("1 floor")
+        {"floor", n} -> gettext("%{n} floors", n: n)
+        {"room", 1} -> gettext("1 room")
+        {"room", n} -> gettext("%{n} rooms", n: n)
+        {other, n} -> "#{n} #{other}"
+      end)
+
+    gettext("Please fix the highlighted issues in %{list} below before saving.",
+      list: Enum.join(parts, ", ")
+    )
   end
 
   # ── Attachments (featured image modal + inline files dropzone) ──
@@ -997,12 +1096,14 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   end
 
   # Distills the list of `{:error, draft_id, reason}` tuples into a
-  # single short flash. Changeset errors surface their actual
-  # validation messages so the user knows what to fix, instead of
-  # the previous "N failed" with no hint why.
-  defp draft_error_summary(errors) do
+  # single short flash. Most validation errors are caught up-front
+  # by `validate_drafts_for_save/1` now, so this only surfaces if a
+  # save reached the DB and failed there (e.g. a constraint violation
+  # the schema validator missed). Kind-aware so it reads naturally:
+  # "1 floor: <msg>; 2 rooms: <msg>" instead of just "3 failed".
+  defp draft_error_summary(errors_with_drafts) when is_list(errors_with_drafts) do
     details =
-      errors
+      errors_with_drafts
       |> Enum.map(fn {:error, _id, reason} -> format_draft_error_reason(reason) end)
       |> Enum.frequencies()
       |> Enum.map(fn
@@ -1012,7 +1113,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> Enum.join("; ")
 
     gettext("Location saved, but %{count} space(s) failed: %{details}",
-      count: length(errors),
+      count: length(errors_with_drafts),
       details: details
     )
   end
