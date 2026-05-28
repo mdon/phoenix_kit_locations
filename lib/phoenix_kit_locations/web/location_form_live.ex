@@ -196,7 +196,10 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         preserve_fields: @preserve_fields
       )
 
-    params = Map.put(params, "features", socket.assigns.features)
+    params =
+      params
+      |> Map.put("features", socket.assigns.features)
+      |> merge_running_changes(socket.assigns.changeset)
 
     changeset =
       socket.assigns.location
@@ -204,6 +207,20 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> Map.put(:action, :validate)
 
     {:noreply, socket |> assign_form(changeset) |> assign(:address_warning, nil)}
+  end
+
+  # The Location form renders as TWO `<.form>` elements (Public Info on
+  # top, Files + Internal on the bottom, with the Spaces card sitting
+  # between them) — both bound to the same `@form`. A `phx-change` from
+  # either half only submits its own inputs, so a naive rebuild from
+  # `socket.assigns.location` would clobber the OTHER form's
+  # in-progress edits. We merge the running changeset's `changes` map
+  # back in so every validate keeps the full edit picture.
+  defp merge_running_changes(params, %Ecto.Changeset{changes: changes}) do
+    existing =
+      Map.new(changes, fn {k, v} -> {Atom.to_string(k), v} end)
+
+    Map.merge(existing, params)
   end
 
   def handle_event("toggle_type", %{"uuid" => uuid}, socket) do
@@ -265,6 +282,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       params
       |> Map.put("features", socket.assigns.features)
       |> Attachments.inject_attachment_data(socket)
+      |> merge_running_changes(socket.assigns.changeset)
 
     save_location(socket, socket.assigns.action, params)
   end
@@ -473,7 +491,18 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         subtitle={if @action == :new, do: gettext("Add a new location."), else: gettext("Update location details.")}
       />
 
-      <.form for={@form} action="#" phx-change="validate" phx-submit="save">
+      <%!-- Two `<.form>` blocks bound to the same `@form` so the Spaces
+           card can sit between them without HTML's no-nested-forms
+           rule biting. Both have phx-change="validate" / phx-submit="save".
+           See `merge_running_changes/2` for why the validate / save
+           handlers carry forward the running changeset's `changes`. --%>
+      <.form
+        for={@form}
+        id="location-form-top"
+        action="#"
+        phx-change="validate"
+        phx-submit="save"
+      >
         <%!-- ═══════════════════════════════════════════════════════ --%>
         <%!-- PUBLIC INFORMATION                                     --%>
         <%!-- ═══════════════════════════════════════════════════════ --%>
@@ -640,7 +669,24 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
             </div>
           </div>
         </div>
+      </.form>
 
+      <%!-- ═══════════════════════════════════════════════════════ --%>
+      <%!-- SPACES (rooms / floors / zones) — edit mode only       --%>
+      <%!-- Sits between the two halves of the Location form so it  --%>
+      <%!-- visually reads as a subdivision of the address above.   --%>
+      <%!-- ═══════════════════════════════════════════════════════ --%>
+      <%= if @action == :edit do %>
+        {render_spaces_section(assigns)}
+      <% end %>
+
+      <.form
+        for={@form}
+        id="location-form-bottom"
+        action="#"
+        phx-change="validate"
+        phx-submit="save"
+      >
         <%!-- ═══════════════════════════════════════════════════════ --%>
         <%!-- FILES & FEATURED IMAGE                                --%>
         <%!-- ═══════════════════════════════════════════════════════ --%>
@@ -892,21 +938,14 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
           </div>
         </div>
       </.form>
-
-      <%!-- ═══════════════════════════════════════════════════════ --%>
-      <%!-- SPACES (rooms / floors / zones) — edit mode only       --%>
-      <%!-- ═══════════════════════════════════════════════════════ --%>
-      <%= if @action == :edit do %>
-        {render_spaces_section(assigns)}
-      <% end %>
     </div>
     """
   end
 
   # The Spaces section is its own `<.form>` element — a sibling of the
-  # Location form, NOT nested (HTML forbids nested forms). Each space
-  # has its own validate/save cycle; the Location's Save button doesn't
-  # bundle space changes.
+  # two halves of the Location form, NOT nested (HTML forbids nested
+  # forms). Each space has its own validate/save cycle; the Location's
+  # Save button doesn't bundle space changes.
   defp render_spaces_section(assigns) do
     assigns =
       assigns
@@ -918,7 +957,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> assign(:kind_options, kind_options())
 
     ~H"""
-    <div class="card bg-base-100 shadow-lg">
+    <div class="card bg-base-100 shadow-lg mt-6">
       <div class="card-body flex flex-col gap-4">
         <div class="flex flex-col gap-0.5">
           <h2 class="text-base font-semibold text-base-content/80 flex items-center gap-2">
@@ -928,13 +967,19 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
             </span>
           </h2>
           <p class="text-xs text-base-content/50">
-            {gettext("Break this location into rooms, floors, or zones. Each space can have its own name, description, and parent.")}
+            {gettext("Break this location into rooms, floors, or zones inside the building above.")}
           </p>
         </div>
 
-        <%!-- Tab strip — one tab per space + "+" to add. Active tab
-             is the one whose form renders below. --%>
-        <div role="tablist" class="tabs tabs-bordered overflow-x-auto flex-nowrap">
+        <%!-- Tab strip only when there's something to switch between.
+             When the location has no spaces yet, the form below stands
+             alone as the "add the first space" form — a single +Add
+             tab on its own reads as awkward chrome. --%>
+        <div
+          :if={@spaces != []}
+          role="tablist"
+          class="tabs tabs-bordered overflow-x-auto flex-nowrap"
+        >
           <button
             :for={s <- @spaces}
             type="button"
@@ -964,12 +1009,14 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
 
         <.form
           for={@space_form}
+          id="location-space-form"
           action="#"
           phx-change="validate_space"
           phx-submit="save_space"
           class="flex flex-col gap-4"
         >
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <%!-- Kind / Parent / Status on one row keeps the form short. --%>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
             <.select
               field={@space_form[:kind]}
               label={gettext("Kind")}
@@ -977,11 +1024,20 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
             />
             <.select
               field={@space_form[:parent_uuid]}
-              label={gettext("Parent space (optional)")}
+              label={gettext("Parent space")}
               options={@parent_options}
+            />
+            <.select
+              field={@space_form[:status]}
+              label={gettext("Status")}
+              options={[{gettext("Active"), "active"}, {gettext("Inactive"), "inactive"}]}
             />
           </div>
 
+          <%!-- HTML5 `required` is intentionally NOT set — clicking
+               Add Space with an empty name should reach the LV so the
+               server-side "Name can't be blank" error renders in the
+               field below, not a browser tooltip on top of it. --%>
           <.translatable_field
             field_name="name"
             form_prefix="space"
@@ -993,7 +1049,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
             lang_data={@space_lang_data}
             label={gettext("Name")}
             placeholder={gettext("e.g., Floor 2, Conference Room, Storage Zone A")}
-            required
             class="w-full"
           />
 
@@ -1012,19 +1067,22 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
             class="w-full"
           />
 
-          <.textarea
-            field={@space_form[:notes]}
-            label={gettext("Internal Notes")}
-            rows="2"
-            placeholder={gettext("Admin-only notes...")}
-            class="min-h-[4rem]"
-          />
-
-          <.select
-            field={@space_form[:status]}
-            label={gettext("Status")}
-            options={[{gettext("Active"), "active"}, {gettext("Inactive"), "inactive"}]}
-          />
+          <%!-- Internal notes is admin-only and rarely set — collapse
+               into a details/summary to keep the form short by default. --%>
+          <details class="text-sm">
+            <summary class="cursor-pointer text-base-content/60 select-none">
+              {gettext("Internal notes (admin-only)")}
+            </summary>
+            <div class="mt-2">
+              <.textarea
+                field={@space_form[:notes]}
+                label={nil}
+                rows="2"
+                placeholder={gettext("Admin-only notes...")}
+                class="min-h-[4rem]"
+              />
+            </div>
+          </details>
 
           <div class="flex justify-between items-center pt-2">
             <button
