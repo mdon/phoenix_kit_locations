@@ -1285,7 +1285,12 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> assign(:rooms_for_floor, rooms_for_floor)
 
     ~H"""
-    <div class="card bg-base-100 shadow-lg mt-6">
+    <%!-- The Spaces card visually nests under the Location: a subtle
+         inset (mx-2) + side accent borders + a tinted background make
+         it clear where the section starts and ends, instead of looking
+         like just another sibling card stacked beside Public Info /
+         Files / Internal. --%>
+    <div class="card bg-base-200/40 shadow-lg mt-6 mx-2 border-l-4 border-r-4 border-primary/40">
       <div class="card-body flex flex-col gap-4">
         <div class="flex flex-col gap-0.5">
           <h2 class="text-base font-semibold text-base-content/80 flex items-center gap-2">
