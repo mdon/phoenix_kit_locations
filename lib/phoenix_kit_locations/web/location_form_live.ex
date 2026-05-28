@@ -1273,7 +1273,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       )
 
     ~H"""
-    <div class="flex flex-col mx-auto max-w-2xl px-4 py-8 gap-6">
+    <div class="flex flex-col w-full px-4 py-8 gap-6">
       <%!-- Tiny JS hook that pushes `set_active_upload_scope` on
            `dragenter` so drag-and-drop uploads route to the right
            folder even when the user hasn't clicked the dropzone first.
@@ -1321,18 +1321,20 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         subtitle={if @action == :new, do: gettext("Add a new location."), else: gettext("Update location details.")}
       />
 
-      <%!-- Two `<.form>` blocks bound to the same `@form` so the Spaces
-           card can sit between them without HTML's no-nested-forms
-           rule biting. Both have phx-change="validate" / phx-submit="save".
-           See `merge_running_changes/2` for why the validate / save
-           handlers carry forward the running changeset's `changes`. --%>
-      <.form
-        for={@form}
-        id="location-form-top"
-        action="#"
-        phx-change="validate"
-        phx-submit="save"
-      >
+      <%!-- Form content capped at 5xl (matches AI module pattern). --%>
+      <div class="max-w-5xl mx-auto w-full">
+        <%!-- Two `<.form>` blocks bound to the same `@form` so the Spaces
+             card can sit between them without HTML's no-nested-forms
+             rule biting. Both have phx-change="validate" / phx-submit="save".
+             See `merge_running_changes/2` for why the validate / save
+             handlers carry forward the running changeset's `changes`. --%>
+        <.form
+          for={@form}
+          id="location-form-top"
+          action="#"
+          phx-change="validate"
+          phx-submit="save"
+        >
         <%!-- ═══════════════════════════════════════════════════════ --%>
         <%!-- PUBLIC INFORMATION                                     --%>
         <%!-- ═══════════════════════════════════════════════════════ --%>
@@ -1611,6 +1613,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
           </div>
         </div>
       </.form>
+      </div>
     </div>
     """
   end
