@@ -394,7 +394,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
            active_floor_id: focus_floor,
            active_room_id: focus_room
          )
-         |> put_flash(:error, invalid_drafts_flash(invalid_drafts))}
+         |> put_flash(:error, invalid_drafts_flash(invalid_drafts, validated_drafts))}
     end
   end
 
@@ -451,25 +451,114 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp active_focus_for_invalid(%{space: %{kind: "room"}} = draft),
     do: {parent_id_of(draft), draft.id}
 
-  # Short, kind-aware flash with proper noun + verb agreement.
-  # Listing each combination as its own gettext entry trades a bit
-  # of code for translations that read naturally — pluralization
-  # rules vary by language so the alternative (interpolating both
-  # noun and verb into one string) doesn't translate cleanly.
-  defp invalid_drafts_flash(invalid_drafts) do
-    f = Enum.count(invalid_drafts, &(&1.space.kind == "floor"))
-    r = Enum.count(invalid_drafts, &(&1.space.kind == "room"))
+  # Builds a flash that names the specific failing draft(s) and the
+  # specific issue. Examples:
+  #
+  #   "Floor 2 needs a name."
+  #   "Floor \"Storage\" needs a name."   (when the floor was typed-named
+  #                                        but another required field failed)
+  #   "Floor 2 needs a name and Room 1 in Floor 2 needs a name."
+  #
+  # Identifying a draft: use the typed name if present; otherwise fall
+  # back to a position label (1-indexed) within the kind's visible
+  # siblings. Rooms include their parent floor in the label so the
+  # user can find them in the right tab.
+  defp invalid_drafts_flash(invalid_drafts, all_drafts) do
+    problems =
+      Enum.map(invalid_drafts, fn d ->
+        describe_draft_problem(d, all_drafts)
+      end)
 
-    case {f, r} do
-      {1, 0} -> gettext("1 floor needs attention.")
-      {n, 0} -> gettext("%{n} floors need attention.", n: n)
-      {0, 1} -> gettext("1 room needs attention.")
-      {0, n} -> gettext("%{n} rooms need attention.", n: n)
-      {1, 1} -> gettext("1 floor and 1 room need attention.")
-      {fc, 1} -> gettext("%{f} floors and 1 room need attention.", f: fc)
-      {1, rc} -> gettext("1 floor and %{r} rooms need attention.", r: rc)
-      {fc, rc} -> gettext("%{f} floors and %{r} rooms need attention.", f: fc, r: rc)
+    join_sentence(problems) <> "."
+  end
+
+  defp describe_draft_problem(draft, all_drafts) do
+    identifier = identify_draft(draft, all_drafts)
+    fields = invalid_field_keys(draft.changeset)
+
+    cond do
+      :name in fields -> gettext("%{label} needs a name", label: identifier)
+      fields == [] -> gettext("%{label} needs attention", label: identifier)
+      true ->
+        first_field = hd(fields)
+        gettext("%{label} has an invalid %{field}",
+          label: identifier,
+          field: humanize_field(first_field)
+        )
     end
+  end
+
+  defp invalid_field_keys(%Ecto.Changeset{errors: errors}),
+    do: errors |> Keyword.keys() |> Enum.uniq()
+
+  # Convert :name → "name", :parent_uuid → "parent". Just a quick
+  # humanizer for the generic-error path; specific fields can grow
+  # better labels here as needed.
+  defp humanize_field(:name), do: gettext("name")
+  defp humanize_field(:description), do: gettext("description")
+  defp humanize_field(:status), do: gettext("status")
+  defp humanize_field(:parent_uuid), do: gettext("parent space")
+  defp humanize_field(field), do: to_string(field)
+
+  defp identify_draft(%{space: %{kind: "floor"}} = draft, all_drafts) do
+    case typed_name(draft) do
+      nil ->
+        floors = visible_drafts_of_kind(all_drafts, "floor")
+        position = (Enum.find_index(floors, &(&1.id == draft.id)) || 0) + 1
+        gettext("Floor %{n}", n: position)
+
+      name ->
+        gettext(~s(Floor "%{name}"), name: name)
+    end
+  end
+
+  defp identify_draft(%{space: %{kind: "room"}} = draft, all_drafts) do
+    parent_id = parent_id_of(draft)
+
+    floor_label =
+      case Enum.find(all_drafts, &(&1.id == parent_id and not &1.deleted)) do
+        nil -> gettext("(unknown floor)")
+        floor -> identify_draft(floor, all_drafts)
+      end
+
+    case typed_name(draft) do
+      nil ->
+        rooms =
+          all_drafts
+          |> Enum.filter(&(&1.space.kind == "room" and parent_id_of(&1) == parent_id and not &1.deleted))
+
+        position = (Enum.find_index(rooms, &(&1.id == draft.id)) || 0) + 1
+        gettext("Room %{n} in %{floor}", n: position, floor: floor_label)
+
+      name ->
+        gettext(~s(Room "%{name}" in %{floor}), name: name, floor: floor_label)
+    end
+  end
+
+  defp typed_name(%{changeset: cs}) do
+    case Ecto.Changeset.get_field(cs, :name) do
+      name when is_binary(name) ->
+        case String.trim(name) do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp visible_drafts_of_kind(drafts, kind),
+    do: Enum.filter(drafts, &(&1.space.kind == kind and not &1.deleted))
+
+  defp join_sentence([]), do: ""
+  defp join_sentence([only]), do: only
+  defp join_sentence([a, b]), do: gettext("%{a} and %{b}", a: a, b: b)
+
+  defp join_sentence(list) do
+    last = List.last(list)
+    init = list |> Enum.drop(-1) |> Enum.join(", ")
+    gettext("%{init}, and %{last}", init: init, last: last)
   end
 
   # ── Attachments (featured image modal + inline files dropzone) ──
