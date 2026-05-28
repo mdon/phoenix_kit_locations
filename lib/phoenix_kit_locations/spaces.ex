@@ -191,19 +191,18 @@ defmodule PhoenixKitLocations.Spaces do
     location_uuid = Map.get(attrs, "location_uuid") || Map.get(attrs, :location_uuid)
     parent_uuid = Map.get(attrs, "parent_uuid") || Map.get(attrs, :parent_uuid)
 
-    cond do
-      is_nil(parent_uuid) or parent_uuid == "" ->
-        :ok
+    check_parent_under_location(location_uuid, parent_uuid)
+  end
 
-      is_nil(location_uuid) ->
-        {:error, :location_not_found}
+  defp check_parent_under_location(_location_uuid, nil), do: :ok
+  defp check_parent_under_location(_location_uuid, ""), do: :ok
+  defp check_parent_under_location(nil, _parent_uuid), do: {:error, :location_not_found}
 
-      true ->
-        case get_space(parent_uuid) do
-          nil -> {:error, :parent_in_other_location}
-          %Space{location_uuid: ^location_uuid} -> :ok
-          %Space{} -> {:error, :parent_in_other_location}
-        end
+  defp check_parent_under_location(location_uuid, parent_uuid) do
+    case get_space(parent_uuid) do
+      nil -> {:error, :parent_in_other_location}
+      %Space{location_uuid: ^location_uuid} -> :ok
+      %Space{} -> {:error, :parent_in_other_location}
     end
   end
 

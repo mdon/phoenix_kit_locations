@@ -802,31 +802,39 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   end
 
   defp cascade_delete_floor(drafts, %{id: floor_id, persisted?: floor_persisted?}) do
-    Enum.reduce(drafts, [], fn d, acc ->
-      cond do
-        d.id == floor_id and floor_persisted? ->
-          [Map.put(d, :deleted, true) | acc]
-
-        d.id == floor_id ->
-          # New floor — drop completely.
-          acc
-
-        d.space.kind == "room" and parent_id_of(d) == floor_id and d.persisted? ->
-          # Persisted room of this floor — queue for the cascaded delete
-          # so the UI hides it now even though the DB CASCADE fires
-          # only when the floor's delete is committed.
-          [Map.put(d, :deleted, true) | acc]
-
-        d.space.kind == "room" and parent_id_of(d) == floor_id ->
-          # New room of a deleted floor — drop completely.
-          acc
-
-        true ->
-          [d | acc]
+    drafts
+    |> Enum.reduce([], fn d, acc ->
+      case classify_for_floor_delete(d, floor_id, floor_persisted?) do
+        :keep -> [d | acc]
+        :drop -> acc
+        :mark_deleted -> [Map.put(d, :deleted, true) | acc]
       end
     end)
     |> Enum.reverse()
   end
+
+  # The floor itself: queue for delete if persisted, drop if new.
+  defp classify_for_floor_delete(%{id: id, persisted?: true}, id, _floor_persisted?),
+    do: :mark_deleted
+
+  defp classify_for_floor_delete(%{id: id}, id, _floor_persisted?), do: :drop
+
+  # A room of the floor: same persisted-vs-new split as above. The DB
+  # CASCADE fires only when the floor's delete is committed; we mark the
+  # rooms here so the UI hides them immediately.
+  defp classify_for_floor_delete(
+         %{space: %{kind: "room"}, persisted?: true} = d,
+         floor_id,
+         _floor_persisted?
+       ) do
+    if parent_id_of(d) == floor_id, do: :mark_deleted, else: :keep
+  end
+
+  defp classify_for_floor_delete(%{space: %{kind: "room"}} = d, floor_id, _floor_persisted?) do
+    if parent_id_of(d) == floor_id, do: :drop, else: :keep
+  end
+
+  defp classify_for_floor_delete(_d, _floor_id, _floor_persisted?), do: :keep
 
   defp save_location(socket, :new, params) do
     case Locations.create_location(params, actor_opts(socket)) do
@@ -862,7 +870,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   # failed so the user can fix them and retry instead of losing all
   # their typing.
   defp finish_save(socket, location, success_msg, nil, _failed_ids) do
-    sync_types_and_redirect(socket, location.uuid, success_msg, nil)
+    sync_types_and_redirect(socket, location.uuid, success_msg)
   end
 
   defp finish_save(socket, location, _success_msg, {kind, msg}, failed_ids) do
@@ -892,10 +900,9 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     ids = MapSet.new(drafts, & &1.id)
 
     active_floor =
-      cond do
-        socket.assigns.active_floor_id in ids -> socket.assigns.active_floor_id
-        true -> first_visible_floor_id(drafts)
-      end
+      if socket.assigns.active_floor_id in ids,
+        do: socket.assigns.active_floor_id,
+        else: first_visible_floor_id(drafts)
 
     active_room =
       if socket.assigns.active_room_id in ids,
@@ -991,20 +998,26 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   end
 
   defp persist_floor_drafts(floors, orphan_blank_floor_ids, location_uuid, opts, socket) do
-    Enum.reduce(floors, {[], %{}}, fn floor, {errors, id_map} ->
-      cond do
-        floor.id in orphan_blank_floor_ids ->
-          # Silent skip — abandoned, no children to orphan.
-          {errors, id_map}
-
-        true ->
-          case persist_floor(floor, location_uuid, opts, socket) do
-            :ok -> {errors, id_map}
-            {:created, new_uuid} -> {errors, Map.put(id_map, floor.id, new_uuid)}
-            {:error, _, _} = err -> {[err | errors], id_map}
-          end
-      end
+    Enum.reduce(floors, {[], %{}}, fn floor, acc ->
+      step_floor_draft(floor, orphan_blank_floor_ids, location_uuid, opts, socket, acc)
     end)
+  end
+
+  # Silent skip on orphan-blank floors (abandoned, no children to orphan).
+  defp step_floor_draft(floor, orphan_blank_floor_ids, location_uuid, opts, socket, acc) do
+    if floor.id in orphan_blank_floor_ids do
+      acc
+    else
+      apply_floor_persist_result(floor, location_uuid, opts, socket, acc)
+    end
+  end
+
+  defp apply_floor_persist_result(floor, location_uuid, opts, socket, {errors, id_map}) do
+    case persist_floor(floor, location_uuid, opts, socket) do
+      :ok -> {errors, id_map}
+      {:created, new_uuid} -> {errors, Map.put(id_map, floor.id, new_uuid)}
+      {:error, _, _} = err -> {[err | errors], id_map}
+    end
   end
 
   defp persist_floor(%{persisted?: true, deleted: true} = floor, _loc, opts, _socket) do
@@ -1044,41 +1057,39 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     has_field_changes? = map_size(cs.changes) > 0
     has_attachment_changes? = scope_has_attachment_changes?(socket, floor.id, floor.space)
 
-    cond do
-      has_field_changes? or has_attachment_changes? ->
-        attrs =
-          cs
-          |> Ecto.Changeset.apply_changes()
-          |> space_to_attrs()
-          |> Attachments.inject_attachment_data(socket, floor.id)
+    if has_field_changes? or has_attachment_changes? do
+      attrs =
+        cs
+        |> Ecto.Changeset.apply_changes()
+        |> space_to_attrs()
+        |> Attachments.inject_attachment_data(socket, floor.id)
 
-        case Spaces.update_space(floor.space, attrs, opts) do
-          {:ok, _} -> :ok
-          {:error, reason} -> {:error, floor.id, reason}
-        end
-
-      true ->
-        :ok
+      case Spaces.update_space(floor.space, attrs, opts) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, floor.id, reason}
+      end
+    else
+      :ok
     end
   end
 
   defp persist_room_drafts(rooms, deleting_floor_ids, id_map, location_uuid, opts, socket) do
     Enum.reduce(rooms, [], fn room, errors ->
-      parent_id = parent_id_of(room)
-
-      cond do
-        parent_id in deleting_floor_ids ->
-          # Floor's delete will CASCADE this room (for persisted ones)
-          # or it was never staged (for new ones).
-          errors
-
-        true ->
-          case persist_room(room, id_map, location_uuid, opts, socket) do
-            :ok -> errors
-            {:error, _, _} = err -> [err | errors]
-          end
-      end
+      step_room_draft(room, deleting_floor_ids, id_map, location_uuid, opts, socket, errors)
     end)
+  end
+
+  # Floor's delete will CASCADE this room (for persisted ones) or it
+  # was never staged (for new ones).
+  defp step_room_draft(room, deleting_floor_ids, id_map, location_uuid, opts, socket, errors) do
+    if parent_id_of(room) in deleting_floor_ids do
+      errors
+    else
+      case persist_room(room, id_map, location_uuid, opts, socket) do
+        :ok -> errors
+        {:error, _, _} = err -> [err | errors]
+      end
+    end
   end
 
   defp persist_room(%{persisted?: true, deleted: true} = room, _id_map, _loc, opts, _socket) do
@@ -1135,24 +1146,22 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     has_field_changes? = map_size(cs.changes) > 0
     has_attachment_changes? = scope_has_attachment_changes?(socket, room.id, room.space)
 
-    cond do
-      has_field_changes? or has_attachment_changes? ->
-        parent_uuid = resolve_parent_uuid(parent_id_of(room), id_map)
+    if has_field_changes? or has_attachment_changes? do
+      parent_uuid = resolve_parent_uuid(parent_id_of(room), id_map)
 
-        attrs =
-          cs
-          |> Ecto.Changeset.apply_changes()
-          |> space_to_attrs()
-          |> Map.put("parent_uuid", parent_uuid)
-          |> Attachments.inject_attachment_data(socket, room.id)
+      attrs =
+        cs
+        |> Ecto.Changeset.apply_changes()
+        |> space_to_attrs()
+        |> Map.put("parent_uuid", parent_uuid)
+        |> Attachments.inject_attachment_data(socket, room.id)
 
-        case Spaces.update_space(room.space, attrs, opts) do
-          {:ok, _} -> :ok
-          {:error, reason} -> {:error, room.id, reason}
-        end
-
-      true ->
-        :ok
+      case Spaces.update_space(room.space, attrs, opts) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, room.id, reason}
+      end
+    else
+      :ok
     end
   end
 
@@ -1206,11 +1215,10 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       errors_with_drafts
       |> Enum.map(fn {:error, _id, reason} -> format_draft_error_reason(reason) end)
       |> Enum.frequencies()
-      |> Enum.map(fn
+      |> Enum.map_join("; ", fn
         {msg, 1} -> msg
         {msg, n} -> "#{n}× #{msg}"
       end)
-      |> Enum.join("; ")
 
     gettext("Location saved, but %{count} space(s) failed: %{details}",
       count: length(errors_with_drafts),
@@ -1249,20 +1257,14 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     {:noreply, socket}
   end
 
-  defp sync_types_and_redirect(socket, location_uuid, message, draft_flash \\ nil) do
+  defp sync_types_and_redirect(socket, location_uuid, message) do
     type_uuids = MapSet.to_list(socket.assigns.linked_type_uuids)
-
-    flash_overrides =
-      case draft_flash do
-        nil -> [{:info, message}]
-        {kind, msg} -> [{kind, msg}]
-      end
 
     case Locations.sync_location_types(location_uuid, type_uuids, actor_opts(socket)) do
       {:ok, _sync_state} ->
         {:noreply,
-         flash_overrides
-         |> Enum.reduce(socket, fn {k, m}, s -> put_flash(s, k, m) end)
+         socket
+         |> put_flash(:info, message)
          |> push_navigate(to: Paths.index())}
 
       {:error, _} ->
