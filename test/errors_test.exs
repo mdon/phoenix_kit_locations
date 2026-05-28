@@ -25,6 +25,24 @@ defmodule PhoenixKitLocations.ErrorsTest do
                "Saved but failed to update type assignments."
     end
 
+    test ":space_not_found" do
+      assert Errors.message(:space_not_found) == "Space not found."
+    end
+
+    test ":parent_in_other_location" do
+      assert Errors.message(:parent_in_other_location) ==
+               "The chosen parent space belongs to a different location."
+    end
+
+    test ":cycle" do
+      assert Errors.message(:cycle) == "Cannot make a space its own ancestor."
+    end
+
+    test ":parent_floor_unsaved" do
+      assert Errors.message(:parent_floor_unsaved) ==
+               "its parent floor was not saved (it might need a name)"
+    end
+
     test ":unexpected" do
       assert Errors.message(:unexpected) == "An unexpected error occurred."
     end
