@@ -72,10 +72,25 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
          )
          |> assign_form(changeset)
          |> mount_multilang()
-         |> Attachments.mount_attachments(location)
+         |> Attachments.init()
          |> Attachments.allow_attachment_upload()
-         |> assign_spaces_state(action, location)}
+         |> Attachments.mount(scope: location_scope(), resource: location)
+         |> assign_spaces_state(action, location)
+         |> mount_space_scopes()}
     end
+  end
+
+  # The Location's scope key for the Files card. Constant — there's
+  # only ever one Location per page.
+  defp location_scope, do: "location"
+
+  # Walks existing space drafts (post-mount of :edit) and mounts an
+  # attachments scope for each. New drafts (added by user clicks) get
+  # their scopes mounted on-the-fly in `add_floor` / `add_room`.
+  defp mount_space_scopes(socket) do
+    Enum.reduce(socket.assigns.space_drafts, socket, fn d, s ->
+      Attachments.mount(s, scope: d.id, resource: d.space)
+    end)
   end
 
   # ── Spaces state — staged drafts ─────────────────────────────────
@@ -353,16 +368,18 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     params =
       params
       |> Map.put("features", socket.assigns.features)
-      |> Attachments.inject_attachment_data(socket)
+      |> Attachments.inject_attachment_data(socket, location_scope())
       |> merge_running_changes(socket.assigns.changeset)
 
     save_location(socket, socket.assigns.action, params)
   end
 
   # ── Attachments (featured image modal + inline files dropzone) ──
+  # All events take a `scope` via phx-value-scope so multiple Files
+  # cards on the same page route to their own state.
 
-  def handle_event("open_featured_image_picker", _params, socket),
-    do: Attachments.open_featured_image_picker(socket)
+  def handle_event("open_featured_image_picker", %{"scope" => scope}, socket),
+    do: Attachments.open_featured_image_picker(socket, scope)
 
   def handle_event("close_media_selector", _params, socket),
     do: {:noreply, Attachments.close_media_selector(socket)}
@@ -370,11 +387,16 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   def handle_event("cancel_upload", %{"ref" => ref}, socket),
     do: Attachments.cancel_attachment_upload(socket, ref)
 
-  def handle_event("remove_file", %{"uuid" => uuid}, socket),
-    do: Attachments.trash_file(socket, uuid)
+  def handle_event("remove_file", %{"scope" => scope, "uuid" => uuid}, socket),
+    do: Attachments.trash_file(socket, scope, uuid)
 
-  def handle_event("clear_featured_image", _params, socket),
-    do: Attachments.clear_featured_image(socket)
+  def handle_event("clear_featured_image", %{"scope" => scope}, socket),
+    do: Attachments.clear_featured_image(socket, scope)
+
+  # Marks which Files card the next upload is for. Wired to phx-click
+  # on each dropzone label.
+  def handle_event("set_active_upload_scope", %{"scope" => scope}, socket),
+    do: {:noreply, Attachments.set_active_upload_scope(socket, scope)}
 
   # ── Spaces (staged drafts — commit on global save) ─────────────
 
@@ -390,11 +412,13 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     drafts = socket.assigns.space_drafts ++ [draft]
 
     {:noreply,
-     assign(socket,
+     socket
+     |> assign(
        space_drafts: drafts,
        active_floor_id: draft.id,
        active_room_id: nil
-     )}
+     )
+     |> Attachments.mount(scope: draft.id, resource: draft.space)}
   end
 
   def handle_event("add_room", _params, socket) do
@@ -410,10 +434,12 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         drafts = socket.assigns.space_drafts ++ [draft]
 
         {:noreply,
-         assign(socket,
+         socket
+         |> assign(
            space_drafts: drafts,
            active_room_id: draft.id
-         )}
+         )
+         |> Attachments.mount(scope: draft.id, resource: draft.space)}
     end
   end
 
@@ -518,19 +544,29 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   # Marks the active floor for delete and cascades to all of its room
   # drafts (new ones drop entirely; persisted ones get queued for the
   # CASCADE that fires in `Spaces.delete_space/2`). Keeps the visible
-  # state consistent with what the global save will commit.
+  # state consistent with what the global save will commit. Also frees
+  # the attachment scopes for any drafts that were entirely dropped
+  # (no need to keep their state around — they're gone).
   def handle_event("delete_floor", _params, socket) do
     case find_draft(socket.assigns.space_drafts, socket.assigns.active_floor_id) do
       %{space: %{kind: "floor"}} = floor ->
+        old_ids = MapSet.new(socket.assigns.space_drafts, & &1.id)
         drafts = cascade_delete_floor(socket.assigns.space_drafts, floor)
+        kept_ids = MapSet.new(drafts, & &1.id)
+        dropped = MapSet.difference(old_ids, kept_ids)
+
         next_floor = first_visible_floor_id(drafts)
 
-        {:noreply,
-         assign(socket,
-           space_drafts: drafts,
-           active_floor_id: next_floor,
-           active_room_id: nil
-         )}
+        socket =
+          socket
+          |> assign(
+            space_drafts: drafts,
+            active_floor_id: next_floor,
+            active_room_id: nil
+          )
+          |> forget_dropped_scopes(dropped)
+
+        {:noreply, socket}
 
       _ ->
         {:noreply, socket}
@@ -540,15 +576,21 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   def handle_event("delete_room", %{"id" => id}, socket) do
     case find_draft(socket.assigns.space_drafts, id) do
       %{space: %{kind: "room"}, persisted?: false} ->
-        # Never reached the DB — drop entirely.
+        # Never reached the DB — drop entirely + free its scope state.
         drafts = Enum.reject(socket.assigns.space_drafts, &(&1.id == id))
 
         active_room =
           if socket.assigns.active_room_id == id, do: nil, else: socket.assigns.active_room_id
 
-        {:noreply, assign(socket, space_drafts: drafts, active_room_id: active_room)}
+        {:noreply,
+         socket
+         |> assign(space_drafts: drafts, active_room_id: active_room)
+         |> Attachments.forget_scope(id)}
 
       %{space: %{kind: "room"}, persisted?: true} ->
+        # Keep the scope state — the user can still see the files
+        # were attached to this room until they hit Save. The deletion
+        # commits then; the row + cascaded folder go away with it.
         drafts = update_draft(socket.assigns.space_drafts, id, &Map.put(&1, :deleted, true))
 
         active_room =
@@ -559,6 +601,10 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       _ ->
         {:noreply, socket}
     end
+  end
+
+  defp forget_dropped_scopes(socket, %MapSet{} = dropped) do
+    Enum.reduce(dropped, socket, fn id, s -> Attachments.forget_scope(s, id) end)
   end
 
   defp cascade_delete_floor(drafts, %{id: floor_id, persisted?: floor_persisted?}) do
@@ -591,7 +637,8 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp save_location(socket, :new, params) do
     case Locations.create_location(params, actor_opts(socket)) do
       {:ok, location} ->
-        _ = Attachments.maybe_rename_pending_folder(socket, location)
+        location_folder = Attachments.state(socket, location_scope()).folder_uuid
+        _ = Attachments.maybe_rename_pending_folder_for(location_folder, location)
 
         flash = persist_space_drafts(socket.assigns.space_drafts, location.uuid, socket)
         sync_types_and_redirect(socket, location.uuid, gettext("Location created."), flash)
@@ -631,10 +678,10 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> Enum.filter(&(&1.persisted? and &1.deleted))
       |> MapSet.new(& &1.id)
 
-    {floor_errors, id_map} = persist_floor_drafts(floors, location_uuid, opts)
+    {floor_errors, id_map} = persist_floor_drafts(floors, location_uuid, opts, socket)
 
     room_errors =
-      persist_room_drafts(rooms, deleting_floor_ids, id_map, location_uuid, opts)
+      persist_room_drafts(rooms, deleting_floor_ids, id_map, location_uuid, opts, socket)
 
     case floor_errors ++ room_errors do
       [] -> nil
@@ -642,9 +689,9 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     end
   end
 
-  defp persist_floor_drafts(floors, location_uuid, opts) do
+  defp persist_floor_drafts(floors, location_uuid, opts, socket) do
     Enum.reduce(floors, {[], %{}}, fn floor, {errors, id_map} ->
-      case persist_floor(floor, location_uuid, opts) do
+      case persist_floor(floor, location_uuid, opts, socket) do
         :ok -> {errors, id_map}
         {:created, new_uuid} -> {errors, Map.put(id_map, floor.id, new_uuid)}
         {:error, _, _} = err -> {[err | errors], id_map}
@@ -652,43 +699,58 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     end)
   end
 
-  defp persist_floor(%{persisted?: true, deleted: true} = floor, _loc, opts) do
+  defp persist_floor(%{persisted?: true, deleted: true} = floor, _loc, opts, _socket) do
     case Spaces.delete_space(floor.space, opts) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, floor.id, reason}
     end
   end
 
-  defp persist_floor(%{persisted?: false, deleted: true}, _loc, _opts), do: :ok
+  defp persist_floor(%{persisted?: false, deleted: true}, _loc, _opts, _socket), do: :ok
 
-  defp persist_floor(%{persisted?: false} = floor, location_uuid, opts) do
+  defp persist_floor(%{persisted?: false} = floor, location_uuid, opts, socket) do
     attrs =
       floor.changeset
       |> Ecto.Changeset.apply_changes()
       |> space_to_attrs()
       |> Map.put("location_uuid", location_uuid)
       |> Map.put("parent_uuid", nil)
+      |> Attachments.inject_attachment_data(socket, floor.id)
 
     case Spaces.create_space(attrs, opts) do
-      {:ok, saved} -> {:created, saved.uuid}
-      {:error, reason} -> {:error, floor.id, reason}
+      {:ok, saved} ->
+        st = Attachments.state(socket, floor.id)
+        _ = Attachments.maybe_rename_pending_folder_for(st.folder_uuid, saved)
+        {:created, saved.uuid}
+
+      {:error, reason} ->
+        {:error, floor.id, reason}
     end
   end
 
-  defp persist_floor(%{persisted?: true, changeset: %{changes: changes}}, _loc, _opts)
-       when map_size(changes) == 0,
-       do: :ok
+  defp persist_floor(%{persisted?: true, changeset: cs} = floor, _loc, opts, socket) do
+    has_field_changes? = map_size(cs.changes) > 0
+    has_attachment_changes? = scope_has_attachment_changes?(socket, floor.id, floor.space)
 
-  defp persist_floor(%{persisted?: true} = floor, _loc, opts) do
-    attrs = floor.changeset |> Ecto.Changeset.apply_changes() |> space_to_attrs()
+    cond do
+      has_field_changes? or has_attachment_changes? ->
+        attrs =
+          cs
+          |> Ecto.Changeset.apply_changes()
+          |> space_to_attrs()
+          |> Attachments.inject_attachment_data(socket, floor.id)
 
-    case Spaces.update_space(floor.space, attrs, opts) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, floor.id, reason}
+        case Spaces.update_space(floor.space, attrs, opts) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, floor.id, reason}
+        end
+
+      true ->
+        :ok
     end
   end
 
-  defp persist_room_drafts(rooms, deleting_floor_ids, id_map, location_uuid, opts) do
+  defp persist_room_drafts(rooms, deleting_floor_ids, id_map, location_uuid, opts, socket) do
     Enum.reduce(rooms, [], fn room, errors ->
       parent_id = parent_id_of(room)
 
@@ -699,7 +761,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
           errors
 
         true ->
-          case persist_room(room, id_map, location_uuid, opts) do
+          case persist_room(room, id_map, location_uuid, opts, socket) do
             :ok -> errors
             {:error, _, _} = err -> [err | errors]
           end
@@ -707,16 +769,16 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     end)
   end
 
-  defp persist_room(%{persisted?: true, deleted: true} = room, _id_map, _loc, opts) do
+  defp persist_room(%{persisted?: true, deleted: true} = room, _id_map, _loc, opts, _socket) do
     case Spaces.delete_space(room.space, opts) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, room.id, reason}
     end
   end
 
-  defp persist_room(%{persisted?: false, deleted: true}, _id_map, _loc, _opts), do: :ok
+  defp persist_room(%{persisted?: false, deleted: true}, _id_map, _loc, _opts, _socket), do: :ok
 
-  defp persist_room(%{persisted?: false} = room, id_map, location_uuid, opts) do
+  defp persist_room(%{persisted?: false} = room, id_map, location_uuid, opts, socket) do
     parent_uuid = resolve_parent_uuid(parent_id_of(room), id_map)
 
     attrs =
@@ -725,30 +787,53 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       |> space_to_attrs()
       |> Map.put("location_uuid", location_uuid)
       |> Map.put("parent_uuid", parent_uuid)
+      |> Attachments.inject_attachment_data(socket, room.id)
 
     case Spaces.create_space(attrs, opts) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, room.id, reason}
+      {:ok, saved} ->
+        st = Attachments.state(socket, room.id)
+        _ = Attachments.maybe_rename_pending_folder_for(st.folder_uuid, saved)
+        :ok
+
+      {:error, reason} ->
+        {:error, room.id, reason}
     end
   end
 
-  defp persist_room(%{persisted?: true, changeset: %{changes: changes}}, _id_map, _loc, _opts)
-       when map_size(changes) == 0,
-       do: :ok
+  defp persist_room(%{persisted?: true, changeset: cs} = room, id_map, _loc, opts, socket) do
+    has_field_changes? = map_size(cs.changes) > 0
+    has_attachment_changes? = scope_has_attachment_changes?(socket, room.id, room.space)
 
-  defp persist_room(%{persisted?: true} = room, id_map, _loc, opts) do
-    parent_uuid = resolve_parent_uuid(parent_id_of(room), id_map)
+    cond do
+      has_field_changes? or has_attachment_changes? ->
+        parent_uuid = resolve_parent_uuid(parent_id_of(room), id_map)
 
-    attrs =
-      room.changeset
-      |> Ecto.Changeset.apply_changes()
-      |> space_to_attrs()
-      |> Map.put("parent_uuid", parent_uuid)
+        attrs =
+          cs
+          |> Ecto.Changeset.apply_changes()
+          |> space_to_attrs()
+          |> Map.put("parent_uuid", parent_uuid)
+          |> Attachments.inject_attachment_data(socket, room.id)
 
-    case Spaces.update_space(room.space, attrs, opts) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, room.id, reason}
+        case Spaces.update_space(room.space, attrs, opts) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, room.id, reason}
+        end
+
+      true ->
+        :ok
     end
+  end
+
+  # Detects whether a persisted draft's attachment state has changed
+  # against its persisted baseline — without this, "Save Changes" on a
+  # location whose only edit was a new featured image would no-op (the
+  # changeset has no field changes).
+  defp scope_has_attachment_changes?(socket, scope, %Space{} = space) do
+    st = Attachments.state(socket, scope)
+    data = space.data || %{}
+    Map.get(data, "files_folder_uuid") != st.folder_uuid or
+      Map.get(data, "featured_image_uuid") != st.featured_image_uuid
   end
 
   # Translates a draft id ("new-XXX") to its newly created DB uuid via
@@ -829,9 +914,11 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
 
     ~H"""
     <div class="flex flex-col mx-auto max-w-2xl px-4 py-8 gap-6">
-      <%!-- Folder-scoped media selector (featured-image picker). Inline
-           files dropzone in the Files card below uses the LV upload
-           channel directly — modal is featured-image-only for now. --%>
+      <%!-- Folder-scoped media selector (featured-image picker). The
+           dropzone in each Files card uses the LV upload channel
+           directly — modal is featured-image-only. `scope_folder_id`
+           pulls the folder of whichever scope opened the modal (set
+           on click in `open_featured_image_picker/2`). --%>
       <.live_component
         module={PhoenixKitWeb.Live.Components.MediaSelectorModal}
         id="location-form-media-selector"
@@ -839,7 +926,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         mode={@media_selection_mode}
         file_type_filter={@media_filter}
         selected_uuids={@media_selected_uuids}
-        scope_folder_id={@files_folder_uuid}
+        scope_folder_id={Attachments.state(%{assigns: assigns}, @media_selector_scope).folder_uuid}
         phoenix_kit_current_user={assigns[:phoenix_kit_current_user]}
       />
 
@@ -1046,175 +1133,18 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         phx-submit="save"
       >
         <%!-- ═══════════════════════════════════════════════════════ --%>
-        <%!-- FILES & FEATURED IMAGE                                --%>
+        <%!-- FILES & FEATURED IMAGE — Location scope                --%>
         <%!-- ═══════════════════════════════════════════════════════ --%>
         <div class="card bg-base-100 shadow-lg mt-6">
           <div class="card-body flex flex-col gap-4">
-            <div class="flex items-center justify-between">
-              <h2 class="text-base font-semibold text-base-content/80 flex items-center gap-2">
-                <.icon name="hero-photo" class="w-4 h-4" /> {gettext("Featured Image")}
-              </h2>
-              <span class="text-xs text-base-content/50">
-                {gettext("Shown alongside this location in listings.")}
-              </span>
-            </div>
-
-            <%= if @featured_image_file do %>
-              <div class="flex items-center gap-4">
-                <a
-                  href={URLSigner.signed_url(@featured_image_uuid, "original")}
-                  target="_blank"
-                  rel="noopener"
-                  class="shrink-0"
-                  title={gettext("Open original")}
-                >
-                  <img
-                    src={URLSigner.signed_url(@featured_image_uuid, "thumbnail")}
-                    alt={@featured_image_file.original_file_name}
-                    class="w-24 h-24 rounded-md object-cover bg-base-200 border border-base-300"
-                  />
-                </a>
-                <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium truncate">{@featured_image_file.original_file_name}</p>
-                  <p class="text-xs text-base-content/50">{Attachments.format_file_size(@featured_image_file.size)}</p>
-                </div>
-                <div class="flex flex-col gap-2">
-                  <button type="button" phx-click="open_featured_image_picker" class="btn btn-sm btn-outline">
-                    {gettext("Change")}
-                  </button>
-                  <button
-                    type="button"
-                    phx-click="clear_featured_image"
-                    phx-disable-with={gettext("Removing...")}
-                    class="btn btn-sm btn-ghost"
-                  >
-                    {gettext("Remove")}
-                  </button>
-                </div>
-              </div>
-            <% else %>
-              <div class="flex items-center justify-between py-4 border border-dashed border-base-300 rounded-md px-4">
-                <div class="flex items-center gap-3 text-base-content/60">
-                  <.icon name="hero-photo" class="w-6 h-6" />
-                  <span class="text-sm">{gettext("No featured image set.")}</span>
-                </div>
-                <button type="button" phx-click="open_featured_image_picker" class="btn btn-sm btn-primary">
-                  <.icon name="hero-plus" class="w-4 h-4 mr-1" /> {gettext("Set featured image")}
-                </button>
-              </div>
-            <% end %>
-
-            <div class="divider my-0"></div>
-
-            <div class="flex flex-col gap-0.5">
-              <h2 class="text-base font-semibold text-base-content/80 flex items-center gap-2">
-                <.icon name="hero-paper-clip" class="w-4 h-4" /> {gettext("Attached Files")}
-                <span :if={@files_state.files != []} class="badge badge-sm badge-ghost ml-1">
-                  {length(@files_state.files)}
-                </span>
-              </h2>
-              <p class="text-xs text-base-content/50">
-                {gettext("Floor plans, brochures, certificates. Any file type is accepted.")}
-              </p>
-            </div>
-
-            <label
-              for={@uploads.attachment_files.ref}
-              class="flex flex-col items-center justify-center gap-2 py-6 border-2 border-dashed border-base-300 rounded-md bg-base-200/20 hover:bg-base-200/40 transition-colors cursor-pointer"
-              phx-drop-target={@uploads.attachment_files.ref}
-            >
-              <.icon name="hero-cloud-arrow-up" class="w-8 h-8 text-base-content/40" />
-              <div class="text-sm text-base-content/60">
-                <span class="font-medium text-primary">{gettext("Click to upload")}</span>
-                <span>{gettext(" or drag & drop")}</span>
-              </div>
-              <.live_file_input upload={@uploads.attachment_files} class="hidden" />
-            </label>
-
-            <div :if={@uploads.attachment_files.entries != []} class="flex flex-col gap-2">
-              <div
-                :for={entry <- @uploads.attachment_files.entries}
-                class="flex items-center gap-3 rounded-md border border-base-300 bg-base-100 p-2"
-              >
-                <.icon name="hero-cloud-arrow-up" class="w-4 h-4 text-base-content/60 shrink-0" />
-                <div class="flex-1 min-w-0">
-                  <p class="text-sm truncate">{entry.client_name}</p>
-                  <progress class="progress progress-primary w-full h-1 mt-1" value={entry.progress} max="100"></progress>
-                </div>
-                <span class="text-xs text-base-content/50 tabular-nums">{entry.progress}%</span>
-                <button
-                  type="button"
-                  phx-click="cancel_upload"
-                  phx-value-ref={entry.ref}
-                  class="btn btn-ghost btn-xs btn-square"
-                  title={gettext("Cancel")}
-                >
-                  <.icon name="hero-x-mark" class="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            <p :for={err <- upload_errors(@uploads.attachment_files)} class="text-xs text-error">
-              {Attachments.upload_error_message(err)}
-            </p>
-
-            <%= if @files_state.files == [] do %>
-              <div class="flex flex-col items-center gap-2 py-10 text-center border border-dashed border-base-300 rounded-md">
-                <.icon name="hero-paper-clip" class="w-8 h-8 text-base-content/30" />
-                <p class="text-sm text-base-content/50">{gettext("No files attached yet.")}</p>
-              </div>
-            <% else %>
-              <ul class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <li
-                  :for={file <- @files_state.files}
-                  class="flex items-center gap-3 rounded-md border border-base-300 bg-base-200/30 p-3"
-                >
-                  <%= if file.file_type == "image" do %>
-                    <a
-                      href={URLSigner.signed_url(file.uuid, "original")}
-                      target="_blank"
-                      rel="noopener"
-                      class="shrink-0"
-                    >
-                      <img
-                        src={URLSigner.signed_url(file.uuid, "thumbnail")}
-                        alt={file.original_file_name}
-                        class="w-14 h-14 rounded object-cover bg-base-200 border border-base-300"
-                      />
-                    </a>
-                  <% else %>
-                    <a
-                      href={URLSigner.signed_url(file.uuid, "original")}
-                      target="_blank"
-                      rel="noopener"
-                      class="shrink-0 flex items-center justify-center w-14 h-14 rounded bg-base-200 border border-base-300 text-base-content/60"
-                      title={gettext("Download")}
-                    >
-                      <.icon name={Attachments.file_icon(file)} class="w-6 h-6" />
-                    </a>
-                  <% end %>
-                  <div class="flex-1 min-w-0">
-                    <p class="text-sm font-medium truncate" title={file.original_file_name}>
-                      {file.original_file_name}
-                    </p>
-                    <p class="text-xs text-base-content/50">
-                      {Attachments.format_file_size(file.size)} · {file.file_type}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    phx-click="remove_file"
-                    phx-value-uuid={file.uuid}
-                    phx-disable-with={gettext("Removing...")}
-                    data-confirm={gettext("Remove this file from the location? If it's not attached to any other resource, it will be moved to trash (admins can restore).")}
-                    class="btn btn-ghost btn-xs btn-square"
-                    title={gettext("Remove from location")}
-                  >
-                    <.icon name="hero-x-mark" class="w-4 h-4" />
-                  </button>
-                </li>
-              </ul>
-            <% end %>
+            <.files_card_body
+              scope={location_scope()}
+              state={Attachments.state(%{assigns: assigns}, location_scope())}
+              uploads={@uploads}
+              featured_subtitle={gettext("Shown alongside this location in listings.")}
+              files_subtitle={gettext("Floor plans, brochures, certificates. Any file type is accepted.")}
+              remove_file_confirm={gettext("Remove this file from the location? If it's not attached to any other resource, it will be moved to trash (admins can restore).")}
+            />
           </div>
         </div>
 
@@ -1463,6 +1393,20 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         </div>
       </details>
 
+      <%!-- Per-floor Files + Featured image. Scoped by the floor's
+           draft id so this dropzone routes uploads to the floor's
+           folder, independent of other Files cards on the page. --%>
+      <div class="border-t border-base-300 pt-4 flex flex-col gap-4">
+        <.files_card_body
+          scope={@floor.id}
+          state={Attachments.state(%{assigns: assigns}, @floor.id)}
+          uploads={@uploads}
+          featured_subtitle={gettext("Shown for this floor.")}
+          files_subtitle={gettext("Floor plans, photos, anything specific to this floor.")}
+          remove_file_confirm={gettext("Remove this file from the floor?")}
+        />
+      </div>
+
       <div class="flex justify-end pt-2">
         <button
           type="button"
@@ -1624,6 +1568,18 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         </div>
       </details>
 
+      <%!-- Per-room Files + Featured image — independent scope. --%>
+      <div class="border-t border-base-300 pt-4 flex flex-col gap-4">
+        <.files_card_body
+          scope={@room.id}
+          state={Attachments.state(%{assigns: assigns}, @room.id)}
+          uploads={@uploads}
+          featured_subtitle={gettext("Shown for this room.")}
+          files_subtitle={gettext("Photos, layouts, anything specific to this room.")}
+          remove_file_confirm={gettext("Remove this file from the room?")}
+        />
+      </div>
+
       <div class="flex justify-between items-center pt-2">
         <button
           type="button"
@@ -1648,6 +1604,215 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         </button>
       </div>
     </.form>
+    """
+  end
+
+  # Reusable Files + Featured Image card body. Renders the same UI
+  # for Location, floors, and rooms — each instance scoped by the
+  # `scope` attr, which is forwarded as `phx-value-scope` on every
+  # event button. The single shared upload config is owned by the
+  # parent LV; each dropzone here also sets `:active_upload_scope`
+  # on click so the upload routes to the right folder.
+  attr :scope, :string, required: true
+  attr :state, :map, required: true, doc: "Map from `Attachments.state/2`"
+  attr :uploads, :map, required: true
+  attr :featured_subtitle, :string, default: nil
+  attr :files_subtitle, :string, default: nil
+  attr :remove_file_confirm, :string, default: nil
+
+  defp files_card_body(assigns) do
+    assigns =
+      assigns
+      |> Phoenix.Component.assign_new(:featured_subtitle, fn ->
+        gettext("Shown alongside this item in listings.")
+      end)
+      |> Phoenix.Component.assign_new(:files_subtitle, fn ->
+        gettext("Floor plans, brochures, certificates. Any file type is accepted.")
+      end)
+      |> Phoenix.Component.assign_new(:remove_file_confirm, fn ->
+        gettext("Remove this file? If it's not attached to any other resource, it will be moved to trash (admins can restore).")
+      end)
+
+    ~H"""
+    <div class="flex items-center justify-between">
+      <h2 class="text-base font-semibold text-base-content/80 flex items-center gap-2">
+        <.icon name="hero-photo" class="w-4 h-4" /> {gettext("Featured Image")}
+      </h2>
+      <span class="text-xs text-base-content/50">{@featured_subtitle}</span>
+    </div>
+
+    <%= if @state.featured_image_file do %>
+      <div class="flex items-center gap-4">
+        <a
+          href={URLSigner.signed_url(@state.featured_image_uuid, "original")}
+          target="_blank"
+          rel="noopener"
+          class="shrink-0"
+          title={gettext("Open original")}
+        >
+          <img
+            src={URLSigner.signed_url(@state.featured_image_uuid, "thumbnail")}
+            alt={@state.featured_image_file.original_file_name}
+            class="w-24 h-24 rounded-md object-cover bg-base-200 border border-base-300"
+          />
+        </a>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-medium truncate">{@state.featured_image_file.original_file_name}</p>
+          <p class="text-xs text-base-content/50">{Attachments.format_file_size(@state.featured_image_file.size)}</p>
+        </div>
+        <div class="flex flex-col gap-2">
+          <button
+            type="button"
+            phx-click="open_featured_image_picker"
+            phx-value-scope={@scope}
+            class="btn btn-sm btn-outline"
+          >
+            {gettext("Change")}
+          </button>
+          <button
+            type="button"
+            phx-click="clear_featured_image"
+            phx-value-scope={@scope}
+            phx-disable-with={gettext("Removing...")}
+            class="btn btn-sm btn-ghost"
+          >
+            {gettext("Remove")}
+          </button>
+        </div>
+      </div>
+    <% else %>
+      <div class="flex items-center justify-between py-4 border border-dashed border-base-300 rounded-md px-4">
+        <div class="flex items-center gap-3 text-base-content/60">
+          <.icon name="hero-photo" class="w-6 h-6" />
+          <span class="text-sm">{gettext("No featured image set.")}</span>
+        </div>
+        <button
+          type="button"
+          phx-click="open_featured_image_picker"
+          phx-value-scope={@scope}
+          class="btn btn-sm btn-primary"
+        >
+          <.icon name="hero-plus" class="w-4 h-4 mr-1" /> {gettext("Set featured image")}
+        </button>
+      </div>
+    <% end %>
+
+    <div class="divider my-0"></div>
+
+    <div class="flex flex-col gap-0.5">
+      <h2 class="text-base font-semibold text-base-content/80 flex items-center gap-2">
+        <.icon name="hero-paper-clip" class="w-4 h-4" /> {gettext("Attached Files")}
+        <span :if={@state.files != []} class="badge badge-sm badge-ghost ml-1">
+          {length(@state.files)}
+        </span>
+      </h2>
+      <p class="text-xs text-base-content/50">{@files_subtitle}</p>
+    </div>
+
+    <%!-- Dropzone: phx-click sets the active upload scope so
+         handle_progress routes to the right folder when the file
+         picker resolves. The label also forwards clicks to the
+         hidden <input type=file>. --%>
+    <label
+      for={@uploads.attachment_files.ref}
+      class="flex flex-col items-center justify-center gap-2 py-6 border-2 border-dashed border-base-300 rounded-md bg-base-200/20 hover:bg-base-200/40 transition-colors cursor-pointer"
+      phx-click="set_active_upload_scope"
+      phx-value-scope={@scope}
+      phx-drop-target={@uploads.attachment_files.ref}
+    >
+      <.icon name="hero-cloud-arrow-up" class="w-8 h-8 text-base-content/40" />
+      <div class="text-sm text-base-content/60">
+        <span class="font-medium text-primary">{gettext("Click to upload")}</span>
+        <span>{gettext(" or drag & drop")}</span>
+      </div>
+      <.live_file_input upload={@uploads.attachment_files} class="hidden" />
+    </label>
+
+    <div :if={@uploads.attachment_files.entries != []} class="flex flex-col gap-2">
+      <div
+        :for={entry <- @uploads.attachment_files.entries}
+        class="flex items-center gap-3 rounded-md border border-base-300 bg-base-100 p-2"
+      >
+        <.icon name="hero-cloud-arrow-up" class="w-4 h-4 text-base-content/60 shrink-0" />
+        <div class="flex-1 min-w-0">
+          <p class="text-sm truncate">{entry.client_name}</p>
+          <progress class="progress progress-primary w-full h-1 mt-1" value={entry.progress} max="100"></progress>
+        </div>
+        <span class="text-xs text-base-content/50 tabular-nums">{entry.progress}%</span>
+        <button
+          type="button"
+          phx-click="cancel_upload"
+          phx-value-ref={entry.ref}
+          class="btn btn-ghost btn-xs btn-square"
+          title={gettext("Cancel")}
+        >
+          <.icon name="hero-x-mark" class="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+
+    <p :for={err <- upload_errors(@uploads.attachment_files)} class="text-xs text-error">
+      {Attachments.upload_error_message(err)}
+    </p>
+
+    <%= if @state.files == [] do %>
+      <div class="flex flex-col items-center gap-2 py-10 text-center border border-dashed border-base-300 rounded-md">
+        <.icon name="hero-paper-clip" class="w-8 h-8 text-base-content/30" />
+        <p class="text-sm text-base-content/50">{gettext("No files attached yet.")}</p>
+      </div>
+    <% else %>
+      <ul class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <li
+          :for={file <- @state.files}
+          class="flex items-center gap-3 rounded-md border border-base-300 bg-base-200/30 p-3"
+        >
+          <%= if file.file_type == "image" do %>
+            <a
+              href={URLSigner.signed_url(file.uuid, "original")}
+              target="_blank"
+              rel="noopener"
+              class="shrink-0"
+            >
+              <img
+                src={URLSigner.signed_url(file.uuid, "thumbnail")}
+                alt={file.original_file_name}
+                class="w-14 h-14 rounded object-cover bg-base-200 border border-base-300"
+              />
+            </a>
+          <% else %>
+            <a
+              href={URLSigner.signed_url(file.uuid, "original")}
+              target="_blank"
+              rel="noopener"
+              class="shrink-0 flex items-center justify-center w-14 h-14 rounded bg-base-200 border border-base-300 text-base-content/60"
+              title={gettext("Download")}
+            >
+              <.icon name={Attachments.file_icon(file)} class="w-6 h-6" />
+            </a>
+          <% end %>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm font-medium truncate" title={file.original_file_name}>
+              {file.original_file_name}
+            </p>
+            <p class="text-xs text-base-content/50">
+              {Attachments.format_file_size(file.size)} · {file.file_type}
+            </p>
+          </div>
+          <button
+            type="button"
+            phx-click="remove_file"
+            phx-value-scope={@scope}
+            phx-value-uuid={file.uuid}
+            phx-disable-with={gettext("Removing...")}
+            data-confirm={@remove_file_confirm}
+            class="btn btn-ghost btn-xs btn-square"
+            title={gettext("Remove")}
+          >
+            <.icon name="hero-x-mark" class="w-4 h-4" />
+          </button>
+        </li>
+      </ul>
+    <% end %>
     """
   end
 

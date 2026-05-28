@@ -1,65 +1,64 @@
 defmodule PhoenixKitLocations.Attachments do
   @moduledoc """
   Folder-scoped file attachments + featured image for Locations
-  resources (a Location and a Space share the exact same shape — both
-  carry a `data` JSONB with `files_folder_uuid` and `featured_image_uuid`
-  keys).
+  resources (Location, Space). Designed for **multi-resource** LVs:
+  many Files cards can live on the same page, each keyed by an
+  opaque string "scope" — typically the resource's id or a draft id.
 
-  Each resource owns a `phoenix_kit_media_folders` row keyed by a
-  deterministic name derived from the resource struct and UUID. Files
-  belong to the resource via `phoenix_kit_files.folder_uuid`, queried
-  on mount and refreshed after uploads. An optional featured image is
-  a single UUID pointer on `resource.data["featured_image_uuid"]`.
+  This is a re-shape of the single-resource Attachments pattern in
+  `PhoenixKitCatalogue.Attachments`. Catalogue's version stores
+  everything in top-level socket assigns (`:files_folder_uuid`,
+  `:featured_image_uuid`, …), which forces one resource per LV.
+  Here, all that state lives in a per-scope map:
 
-  Adapted from `PhoenixKitCatalogue.Attachments` — public API and
-  contract are identical so consumer LVs port one-to-one. The only
-  module-specific bits are `folder_name_for/1` (struct pattern match),
-  the Gettext backend, and the pending-folder name prefix.
+      socket.assigns.attachments_by_scope = %{
+        "location" => %{folder_uuid: …, featured_image_uuid: …, files: […], …},
+        "floor-uuid-1" => %{…},
+        "new-uuid-XYZ" => %{…}
+      }
+
+  Modal state (`:show_media_selector` and friends) stays shared at
+  the socket level — only one modal opens at a time — but tracks
+  `:media_selector_scope` so the picker's result applies to the
+  right resource.
+
+  Uploads use a single shared config (`@upload_name`). The dropzone
+  in each Files card calls `set_active_upload_scope/2` on click so
+  `handle_progress/3` knows which scope's folder the file belongs to.
+  Edge case: clicking dropzone A then dropzone B before either file
+  picker resolves will route the next-picked file to B — accepted
+  trade for keeping one upload config instead of N atom-named refs.
 
   ## Usage
 
-  The owning LiveView calls `mount_attachments/2` in `mount/3` and
-  `allow_attachment_upload/1` in the same chain. Its event/info
-  clauses delegate to the matching functions here:
-
+      # Mount
       socket
-      |> Attachments.mount_attachments(location_or_space)
+      |> Attachments.mount(scope: "location", resource: location)
+      |> Attachments.mount(scope: "floor-1", resource: floor)
       |> Attachments.allow_attachment_upload()
 
-      def handle_event("open_featured_image_picker", _, s),
-        do: Attachments.open_featured_image_picker(s)
+      # Render — pass scope to each Files card render
+      <FilesCard scope="location" state={Attachments.state(@socket, "location")} … />
+      <FilesCard scope="floor-1"  state={Attachments.state(@socket, "floor-1")}  … />
 
-      def handle_event("close_media_selector", _, s),
-        do: {:noreply, Attachments.close_media_selector(s)}
+      # Events take scope via phx-value
+      def handle_event("open_featured_image_picker", %{"scope" => scope}, s),
+        do: Attachments.open_featured_image_picker(s, scope)
 
-      def handle_event("cancel_upload", %{"ref" => ref}, s),
-        do: Attachments.cancel_attachment_upload(s, ref)
+      def handle_event("set_active_upload_scope", %{"scope" => scope}, s),
+        do: {:noreply, Attachments.set_active_upload_scope(s, scope)}
 
-      def handle_event("clear_featured_image", _, s),
-        do: Attachments.clear_featured_image(s)
+      # Save-time — inject for each scope
+      params = Attachments.inject_attachment_data(params, socket, "location")
 
-      def handle_event("remove_file", %{"uuid" => uuid}, s),
-        do: Attachments.trash_file(s, uuid)
-
-      def handle_info({:media_selected, uuids}, s),
-        do: Attachments.handle_media_selected(s, uuids)
-
-      def handle_info({:media_selector_closed}, s),
-        do: {:noreply, Attachments.close_media_selector(s)}
-
-  On save, weave attachment state into params:
-
-      params = Attachments.inject_attachment_data(params, socket)
-
-  And after a `:new` save succeeds, rename the pending folder:
-
-      :ok = Attachments.maybe_rename_pending_folder(socket, saved_resource)
+      # After a `:new` resource is persisted, rename its pending folder
+      :ok = Attachments.maybe_rename_pending_folder_for(folder_uuid, saved_resource)
 
   ## Resource shape
 
-  The module pattern-matches on the resource struct to derive the
-  folder name prefix. Currently `Location` and `Space`. Add a new
-  clause to `folder_name_for/1` to support additional resource types.
+  Each scope's resource carries a `data` JSONB with
+  `files_folder_uuid` and `featured_image_uuid` keys. Add a clause
+  to `folder_name_for/1` to support additional resource structs.
   """
 
   require Logger
@@ -81,50 +80,50 @@ defmodule PhoenixKitLocations.Attachments do
   alias PhoenixKitLocations.Schemas.{Location, Space}
 
   @upload_name :attachment_files
-  @doc "Returns the upload ref name used for the inline files dropzone."
+  @files_grid_limit 200
+
+  @doc "Returns the upload ref name used by every Files card on the page."
   def upload_name, do: @upload_name
 
-  # ── Mount ────────────────────────────────────────────────────────
+  @doc """
+  Default empty per-scope state. Returned by `state/2` when the scope
+  hasn't been mounted yet — keeps render-time templates safe to call
+  before mount runs.
+  """
+  def empty_scope_state do
+    %{
+      resource: nil,
+      folder_uuid: nil,
+      featured_image_uuid: nil,
+      featured_image_file: nil,
+      files: []
+    }
+  end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Mount / lifecycle
+  # ═══════════════════════════════════════════════════════════════════
 
   @doc """
-  Populates the attachment-related assigns on the socket. Accepts the
-  owning resource (Location or Space). Stashes the resource at
-  `:attachments_resource` so later callbacks (progress, events) can
-  reach it without plumbing.
-
-  ## Options
-
-    * `:files_grid` (default `true`) — set to `false` to skip the
-      `assign_files_state/1` work (and the per-mount DB query that
-      enumerates the folder's files). Useful when a form only shows
-      the featured-image card and skips the files grid.
+  Initializes the per-scope map and shared modal assigns. Idempotent —
+  safe to call multiple times; existing scope state is preserved.
   """
-  def mount_attachments(socket, resource, opts \\ []) do
-    files_grid? = Keyword.get(opts, :files_grid, true)
-
-    socket =
-      socket
-      |> assign(:attachments_resource, resource)
-      |> assign_files_folder(resource)
-      # Featured image must be set before files_state so the merge can
-      # surface it even if it's in a different folder (e.g. the file was
-      # moved to another resource's folder after being featured here).
-      |> assign_featured_image_state(resource)
-
-    socket =
-      if files_grid? do
-        assign_files_state(socket)
-      else
-        assign(socket, :files_state, %{files: []})
-      end
-
-    assign_media_selector_defaults(socket)
+  def init(socket) do
+    socket
+    |> Phoenix.Component.assign_new(:attachments_by_scope, fn -> %{} end)
+    |> Phoenix.Component.assign_new(:active_upload_scope, fn -> nil end)
+    |> Phoenix.Component.assign_new(:media_selector_scope, fn -> nil end)
+    |> Phoenix.Component.assign_new(:show_media_selector, fn -> false end)
+    |> Phoenix.Component.assign_new(:media_selector_target, fn -> nil end)
+    |> Phoenix.Component.assign_new(:media_selection_mode, fn -> :single end)
+    |> Phoenix.Component.assign_new(:media_filter, fn -> :image end)
+    |> Phoenix.Component.assign_new(:media_selected_uuids, fn -> [] end)
   end
 
   @doc """
-  Registers the file input `:attachment_files` with a 20-file, 100MB
-  ceiling and auto-upload. Progress is consumed by `handle_progress/3`
-  which this module captures for the caller.
+  Registers the shared file input with a 20-file, 100MB ceiling and
+  auto-upload. Progress routes to `handle_progress/3` which reads the
+  active upload scope to figure out the target folder.
   """
   def allow_attachment_upload(socket) do
     allow_upload(socket, @upload_name,
@@ -136,64 +135,97 @@ defmodule PhoenixKitLocations.Attachments do
     )
   end
 
-  defp assign_files_folder(socket, resource) do
-    assign(socket, :files_folder_uuid, read_string(resource_data(resource), "files_folder_uuid"))
+  @doc """
+  Populates a single scope's state from `resource.data`. Pulls the
+  folder uuid (if any) + featured image (if any) + the folder's file
+  list. Existing other-scope entries are left untouched.
+
+  ## Options
+
+    * `:files_grid` (default `true`) — set to `false` to skip the
+      per-mount DB query that enumerates the folder's files. Useful
+      when the card only renders the featured-image control and
+      doesn't need the grid.
+  """
+  def mount(socket, opts) when is_list(opts) do
+    scope = Keyword.fetch!(opts, :scope)
+    resource = Keyword.fetch!(opts, :resource)
+    files_grid? = Keyword.get(opts, :files_grid, true)
+
+    socket = init(socket)
+    data = resource_data(resource)
+    folder_uuid = read_string(data, "files_folder_uuid")
+    featured_uuid = read_string(data, "featured_image_uuid")
+    featured_file = if featured_uuid, do: safe_get_file(featured_uuid), else: nil
+
+    state = %{
+      resource: resource,
+      folder_uuid: folder_uuid,
+      featured_image_uuid: if(featured_file, do: featured_uuid, else: nil),
+      featured_image_file: featured_file,
+      files: if(files_grid?, do: compute_files_list(folder_uuid, featured_file), else: [])
+    }
+
+    put_scope(socket, scope, state)
   end
 
-  defp assign_files_state(socket) do
-    assign(socket, :files_state, %{files: compute_files_list(socket)})
+  @doc """
+  Drops a scope's state (and clears the active-upload / modal scope
+  pointers if they were pointing at this scope). Call when a draft
+  is discarded so the per-scope map doesn't grow unbounded.
+  """
+  def forget_scope(socket, scope) do
+    new_map = Map.delete(socket.assigns[:attachments_by_scope] || %{}, scope)
+
+    socket
+    |> assign(:attachments_by_scope, new_map)
+    |> maybe_clear_active(:active_upload_scope, scope)
+    |> maybe_clear_active(:media_selector_scope, scope)
   end
 
-  defp compute_files_list(socket) do
-    folder_files =
-      case socket.assigns[:files_folder_uuid] do
-        nil -> []
-        folder_uuid -> list_files_in_folder(folder_uuid)
-      end
-
-    case socket.assigns[:featured_image_file] do
-      nil ->
-        folder_files
-
-      %{uuid: featured_uuid} = featured_file ->
-        if Enum.any?(folder_files, &(&1.uuid == featured_uuid)) do
-          folder_files
-        else
-          [featured_file | folder_files]
-        end
-    end
+  defp maybe_clear_active(socket, key, scope) do
+    if socket.assigns[key] == scope, do: assign(socket, key, nil), else: socket
   end
 
-  defp assign_featured_image_state(socket, resource) do
-    uuid = read_string(resource_data(resource), "featured_image_uuid")
-    file = if uuid, do: safe_get_file(uuid), else: nil
+  # ═══════════════════════════════════════════════════════════════════
+  # Render-time accessors
+  # ═══════════════════════════════════════════════════════════════════
 
-    assign(socket,
-      featured_image_uuid: if(file, do: uuid, else: nil),
-      featured_image_file: file
-    )
+  @doc """
+  Returns the per-scope state map (or the empty-state default if the
+  scope hasn't been mounted). Always safe to call from a template.
+  """
+  def state(socket, scope) do
+    Map.get(socket.assigns[:attachments_by_scope] || %{}, scope, empty_scope_state())
   end
 
-  defp assign_media_selector_defaults(socket) do
-    assign(socket,
-      show_media_selector: false,
-      media_selector_target: nil,
-      media_selection_mode: :single,
-      media_filter: :image,
-      media_selected_uuids: []
-    )
+  # ═══════════════════════════════════════════════════════════════════
+  # Event handlers (all take scope where it matters)
+  # ═══════════════════════════════════════════════════════════════════
+
+  @doc """
+  Marks which scope is about to receive the next upload. Wire this
+  to `phx-click` on each Files card's dropzone so concurrent dropzones
+  route to the right folder.
+  """
+  def set_active_upload_scope(socket, scope) when is_binary(scope) do
+    assign(socket, :active_upload_scope, scope)
   end
 
-  # ── Event bodies ─────────────────────────────────────────────────
-
-  @doc "Opens the media selector modal scoped to the resource's folder."
-  def open_featured_image_picker(socket) do
-    case ensure_folder(socket) do
+  @doc """
+  Opens the featured-image picker scoped to this resource's folder.
+  Stores `scope` in `:media_selector_scope` so the picker's reply
+  knows which scope's `:featured_image_uuid` to update.
+  """
+  def open_featured_image_picker(socket, scope) do
+    case ensure_folder(socket, scope) do
       {:ok, _folder_uuid, socket} ->
-        preselected = List.wrap(socket.assigns[:featured_image_uuid])
+        st = state(socket, scope)
+        preselected = List.wrap(st.featured_image_uuid)
 
         {:noreply,
          socket
+         |> assign(:media_selector_scope, scope)
          |> assign(:media_selector_target, :featured_image)
          |> assign(:media_selection_mode, :single)
          |> assign(:media_filter, :image)
@@ -201,7 +233,7 @@ defmodule PhoenixKitLocations.Attachments do
          |> assign(:show_media_selector, true)}
 
       {:error, reason} ->
-        Logger.warning("Failed to ensure attachments folder: #{inspect(reason)}")
+        Logger.warning("Failed to ensure attachments folder for #{scope}: #{inspect(reason)}")
 
         {:noreply,
          put_flash(
@@ -212,11 +244,12 @@ defmodule PhoenixKitLocations.Attachments do
     end
   end
 
-  @doc "Clears the media-selector assigns; returns the plain socket."
+  @doc "Clears modal-state assigns; returns the plain socket."
   def close_media_selector(socket) do
     assign(socket,
       show_media_selector: false,
       media_selector_target: nil,
+      media_selector_scope: nil,
       media_selected_uuids: []
     )
   end
@@ -226,39 +259,41 @@ defmodule PhoenixKitLocations.Attachments do
     {:noreply, cancel_upload(socket, @upload_name, ref)}
   end
 
-  @doc "Nulls the featured image pointer in socket state (save persists)."
-  def clear_featured_image(socket) do
-    {:noreply,
-     socket
-     |> assign(:featured_image_uuid, nil)
-     |> assign(:featured_image_file, nil)
-     |> refresh_files_from_folder()}
+  @doc "Nulls the featured image pointer in the given scope (save persists)."
+  def clear_featured_image(socket, scope) do
+    socket =
+      update_scope(socket, scope, fn st ->
+        %{st | featured_image_uuid: nil, featured_image_file: nil}
+      end)
+      |> refresh_files(scope)
+
+    {:noreply, socket}
   end
 
   @doc """
-  Removes the file from this resource. Three cases:
-
-  1. File's home folder is this resource AND it's only here → trash it.
-  2. File's home folder is this resource AND it's also linked elsewhere
-     → promote one link to home, delete the promoted link.
-  3. File was here via a `FolderLink` → delete the link only.
-
-  Also clears the featured pointer if the removed file was featured.
+  Removes the file from the scope's folder. See per-case comments in
+  `do_detach/2` — soft-trash for single-owner home folders, link
+  deletion when the file is multi-resource. Also clears featured if
+  the removed file was featured.
   """
-  def trash_file(socket, uuid) do
-    folder_uuid = socket.assigns[:files_folder_uuid]
+  def trash_file(socket, scope, uuid) do
+    st = state(socket, scope)
 
-    case do_detach(uuid, folder_uuid) do
+    case do_detach(uuid, st.folder_uuid) do
       :ok ->
-        new_files = Enum.reject(socket.assigns.files_state.files, &(&1.uuid == uuid))
+        new_files = Enum.reject(st.files, &(&1.uuid == uuid))
 
-        {:noreply,
-         socket
-         |> assign(:files_state, %{files: new_files})
-         |> maybe_clear_featured_if_matches(uuid)}
+        socket =
+          socket
+          |> update_scope(scope, fn st ->
+            %{st | files: new_files}
+          end)
+          |> maybe_clear_featured_if_matches(scope, uuid)
+
+        {:noreply, socket}
 
       {:error, reason} ->
-        Logger.warning("Failed to remove file #{uuid}: #{inspect(reason)}")
+        Logger.warning("Failed to remove file #{uuid} for #{scope}: #{inspect(reason)}")
 
         {:noreply,
          put_flash(
@@ -266,6 +301,337 @@ defmodule PhoenixKitLocations.Attachments do
            :error,
            Gettext.gettext(PhoenixKitWeb.Gettext, "Could not remove file.")
          )}
+    end
+  end
+
+  @doc """
+  Routes the `:media_selected` reply by the modal's target. Featured-
+  image target promotes the first selected UUID into the scope tracked
+  by `:media_selector_scope`.
+  """
+  def handle_media_selected(socket, file_uuids) do
+    scope = socket.assigns[:media_selector_scope]
+
+    socket =
+      cond do
+        is_nil(scope) ->
+          socket
+
+        socket.assigns[:media_selector_target] == :featured_image ->
+          apply_featured_image_selection(socket, scope, file_uuids)
+
+        true ->
+          refresh_files(socket, scope)
+      end
+
+    {:noreply, close_media_selector(socket)}
+  end
+
+  # ─── Upload progress ──────────────────────────────────────────────
+
+  @doc false
+  def handle_progress(@upload_name, %{done?: false}, socket), do: {:noreply, socket}
+
+  def handle_progress(@upload_name, entry, socket) do
+    scope = socket.assigns[:active_upload_scope]
+
+    case scope && ensure_folder(socket, scope) do
+      {:ok, folder_uuid, socket} ->
+        consume_and_store(socket, scope, entry, folder_uuid)
+
+      nil ->
+        Logger.warning("Upload finished but no active scope set — dropping #{entry.client_name}")
+
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           Gettext.gettext(PhoenixKitWeb.Gettext, "Upload failed: no target file area selected.")
+         )}
+
+      {:error, reason} ->
+        {:noreply, put_upload_error(socket, entry, reason)}
+    end
+  end
+
+  defp consume_and_store(socket, scope, entry, folder_uuid) do
+    case consume_uploaded_entry(socket, entry, &store_upload(&1, entry, socket, folder_uuid)) do
+      {:ok, _file} -> {:noreply, refresh_files(socket, scope)}
+      {:error, reason} -> {:noreply, put_upload_error(socket, entry, reason)}
+    end
+  end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Save-time helpers
+  # ═══════════════════════════════════════════════════════════════════
+
+  @doc """
+  Merges `files_folder_uuid` and `featured_image_uuid` for `scope`
+  into `params["data"]`. Call right before passing params to your
+  context's create/update.
+  """
+  def inject_attachment_data(params, socket, scope) do
+    st = state(socket, scope)
+
+    params
+    |> inject_files_folder(st.folder_uuid)
+    |> inject_featured_image(st.featured_image_uuid)
+  end
+
+  @doc """
+  Renames a known pending folder UUID to match the resource's
+  deterministic name. Non-fatal: rename failures log and return `:ok`.
+  """
+  @spec maybe_rename_pending_folder_for(String.t() | nil, any()) :: :ok
+  def maybe_rename_pending_folder_for(nil, _resource), do: :ok
+
+  def maybe_rename_pending_folder_for(folder_uuid, resource) when is_binary(folder_uuid) do
+    with {:ok, target_name} <- folder_name_for(resource),
+         %{} = folder <- Storage.get_folder(folder_uuid),
+         current_name when current_name != target_name <- folder.name do
+      case Storage.update_folder(folder, %{name: target_name}) do
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "Pending folder rename failed for #{inspect(resource.__struct__)} #{resource.uuid}: #{inspect(reason)}"
+          )
+
+          :ok
+      end
+    else
+      _ -> :ok
+    end
+  end
+
+  @doc """
+  Returns `{:ok, "<prefix>-<uuid>"}` for known resource structs.
+  Public so multi-scope LVs can compute the target name without
+  re-implementing the prefix scheme.
+  """
+  @spec folder_name_for(any()) :: {:ok, String.t()} | :pending
+  def folder_name_for(%Location{uuid: uuid}) when is_binary(uuid),
+    do: {:ok, "location-#{uuid}"}
+
+  def folder_name_for(%Space{uuid: uuid}) when is_binary(uuid),
+    do: {:ok, "location-space-#{uuid}"}
+
+  def folder_name_for(_), do: :pending
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Template helpers
+  # ═══════════════════════════════════════════════════════════════════
+
+  @doc "Renders a byte count as a human string. Nil-safe."
+  def format_file_size(nil), do: "—"
+
+  def format_file_size(bytes) when is_integer(bytes) do
+    cond do
+      bytes >= 1_000_000_000 -> "#{Float.round(bytes / 1_000_000_000, 1)} GB"
+      bytes >= 1_000_000 -> "#{Float.round(bytes / 1_000_000, 1)} MB"
+      bytes >= 1_000 -> "#{Float.round(bytes / 1_000, 1)} KB"
+      true -> "#{bytes} B"
+    end
+  end
+
+  def format_file_size(_), do: "—"
+
+  @doc "Picks a heroicon name for a file based on its Storage type."
+  def file_icon(%{file_type: "image"}), do: "hero-photo"
+  def file_icon(%{file_type: "video"}), do: "hero-film"
+  def file_icon(%{file_type: "audio"}), do: "hero-musical-note"
+  def file_icon(%{file_type: "archive"}), do: "hero-archive-box"
+  def file_icon(%{mime_type: "application/pdf"}), do: "hero-document-text"
+  def file_icon(_), do: "hero-document"
+
+  @doc "Translates LiveView upload error atoms to user-facing text."
+  def upload_error_message(:too_large),
+    do: Gettext.gettext(PhoenixKitWeb.Gettext, "File is too large.")
+
+  def upload_error_message(:not_accepted),
+    do: Gettext.gettext(PhoenixKitWeb.Gettext, "File type not accepted.")
+
+  def upload_error_message(:too_many_files),
+    do: Gettext.gettext(PhoenixKitWeb.Gettext, "Too many files.")
+
+  def upload_error_message(other),
+    do:
+      Gettext.gettext(PhoenixKitWeb.Gettext, "Upload error: %{reason}",
+        reason: inspect(other)
+      )
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Internals — per-scope state updates
+  # ═══════════════════════════════════════════════════════════════════
+
+  defp put_scope(socket, scope, new_state) do
+    new_map = Map.put(socket.assigns[:attachments_by_scope] || %{}, scope, new_state)
+    assign(socket, :attachments_by_scope, new_map)
+  end
+
+  defp update_scope(socket, scope, fun) when is_function(fun, 1) do
+    map = socket.assigns[:attachments_by_scope] || %{}
+    current = Map.get(map, scope, empty_scope_state())
+    put_scope(socket, scope, fun.(current))
+  end
+
+  defp refresh_files(socket, scope) do
+    update_scope(socket, scope, fn st ->
+      %{st | files: compute_files_list(st.folder_uuid, st.featured_image_file)}
+    end)
+  end
+
+  defp maybe_clear_featured_if_matches(socket, scope, uuid) do
+    st = state(socket, scope)
+
+    if st.featured_image_uuid == uuid do
+      update_scope(socket, scope, fn st ->
+        %{st | featured_image_uuid: nil, featured_image_file: nil}
+      end)
+    else
+      socket
+    end
+  end
+
+  defp apply_featured_image_selection(socket, scope, []) do
+    update_scope(socket, scope, fn st ->
+      %{st | featured_image_uuid: nil, featured_image_file: nil}
+    end)
+  end
+
+  defp apply_featured_image_selection(socket, scope, [uuid | _]) when is_binary(uuid) do
+    case safe_get_file(uuid) do
+      nil ->
+        put_flash(
+          socket,
+          :error,
+          Gettext.gettext(PhoenixKitWeb.Gettext, "Selected image could not be loaded.")
+        )
+
+      file ->
+        socket
+        |> update_scope(scope, fn st ->
+          %{st | featured_image_uuid: uuid, featured_image_file: file}
+        end)
+        |> refresh_files(scope)
+    end
+  end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Internals — folder lifecycle
+  # ═══════════════════════════════════════════════════════════════════
+
+  defp ensure_folder(socket, scope) do
+    st = state(socket, scope)
+
+    case st.folder_uuid do
+      uuid when is_binary(uuid) ->
+        {:ok, uuid, socket}
+
+      _ ->
+        case folder_name_for(st.resource) do
+          {:ok, name} -> find_or_create_folder(socket, scope, name)
+          :pending -> create_pending_folder(socket, scope)
+        end
+    end
+  end
+
+  defp find_or_create_folder(socket, scope, folder_name) do
+    case find_folder_by_name(folder_name) do
+      %{uuid: uuid} ->
+        socket = update_scope(socket, scope, &Map.put(&1, :folder_uuid, uuid))
+        {:ok, uuid, socket}
+
+      nil ->
+        create_folder(socket, scope, folder_name)
+    end
+  end
+
+  defp create_pending_folder(socket, scope) do
+    create_folder(socket, scope, "location-attachment-pending-#{Ecto.UUID.generate()}")
+  end
+
+  defp create_folder(socket, scope, folder_name) do
+    user_uuid = current_user_uuid(socket)
+
+    case Storage.create_folder(%{name: folder_name, user_uuid: user_uuid}) do
+      {:ok, folder} ->
+        socket = update_scope(socket, scope, &Map.put(&1, :folder_uuid, folder.uuid))
+        {:ok, folder.uuid, socket}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp find_folder_by_name(name) when is_binary(name) do
+    from(f in PhoenixKit.Modules.Storage.Folder,
+      where: f.name == ^name and is_nil(f.parent_uuid),
+      limit: 1
+    )
+    |> PhoenixKit.RepoHelper.repo().one()
+  rescue
+    error ->
+      Logger.warning("find_folder_by_name failed for #{name}: #{inspect(error)}")
+      nil
+  end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Internals — file list query + storage I/O
+  # ═══════════════════════════════════════════════════════════════════
+
+  defp compute_files_list(nil, _featured_file), do: []
+
+  defp compute_files_list(folder_uuid, featured_file) do
+    folder_files = list_files_in_folder(folder_uuid)
+
+    case featured_file do
+      nil ->
+        folder_files
+
+      %{uuid: featured_uuid} ->
+        if Enum.any?(folder_files, &(&1.uuid == featured_uuid)),
+          do: folder_files,
+          else: [featured_file | folder_files]
+    end
+  end
+
+  defp list_files_in_folder(folder_uuid) do
+    linked_subq =
+      from(fl in FolderLink,
+        where: fl.folder_uuid == ^folder_uuid,
+        select: fl.file_uuid
+      )
+
+    from(f in File,
+      where:
+        (f.folder_uuid == ^folder_uuid or f.uuid in subquery(linked_subq)) and
+          f.status != "trashed",
+      order_by: [asc: f.inserted_at],
+      limit: @files_grid_limit
+    )
+    |> PhoenixKit.RepoHelper.repo().all()
+  rescue
+    error ->
+      Logger.warning("list_files_in_folder failed for #{folder_uuid}: #{inspect(error)}")
+      []
+  end
+
+  defp safe_get_file(uuid) when is_binary(uuid) do
+    Storage.get_file(uuid)
+  rescue
+    error ->
+      Logger.warning("Failed to load Storage file #{uuid}: #{inspect(error)}")
+      nil
+  end
+
+  defp safe_get_file(_), do: nil
+
+  defp current_user_uuid(socket) do
+    case socket.assigns[:phoenix_kit_current_user] do
+      %{uuid: uuid} -> uuid
+      _ -> nil
     end
   end
 
@@ -325,295 +691,6 @@ defmodule PhoenixKitLocations.Attachments do
   defp list_links(file_uuid) do
     from(fl in FolderLink, where: fl.file_uuid == ^file_uuid)
     |> PhoenixKit.RepoHelper.repo().all()
-  end
-
-  # ── handle_info bodies ───────────────────────────────────────────
-
-  @doc """
-  Routes the `:media_selected` reply by `:media_selector_target`.
-  Featured-image target promotes the first selected UUID; files
-  target is a no-op (modal already set folder_uuid). Both refresh
-  the grid from the folder.
-  """
-  def handle_media_selected(socket, file_uuids) do
-    socket =
-      case socket.assigns[:media_selector_target] do
-        :featured_image -> apply_featured_image_selection(socket, file_uuids)
-        _ -> refresh_files_from_folder(socket)
-      end
-
-    {:noreply, close_media_selector(socket)}
-  end
-
-  # ── Upload progress (captured via &handle_progress/3) ────────────
-
-  @doc false
-  def handle_progress(@upload_name, %{done?: false}, socket), do: {:noreply, socket}
-
-  def handle_progress(@upload_name, entry, socket) do
-    case ensure_folder(socket) do
-      {:ok, folder_uuid, socket} -> consume_and_store(socket, entry, folder_uuid)
-      {:error, reason} -> {:noreply, put_upload_error(socket, entry, reason)}
-    end
-  end
-
-  defp consume_and_store(socket, entry, folder_uuid) do
-    case consume_uploaded_entry(socket, entry, &store_upload(&1, entry, socket, folder_uuid)) do
-      {:ok, _file} -> {:noreply, refresh_files_from_folder(socket)}
-      {:error, reason} -> {:noreply, put_upload_error(socket, entry, reason)}
-    end
-  end
-
-  # ── Save-time helpers ────────────────────────────────────────────
-
-  @doc """
-  Merges `files_folder_uuid` and `featured_image_uuid` into `params["data"]`.
-  Call right before passing params to your context's create/update.
-  """
-  def inject_attachment_data(params, socket) do
-    params
-    |> inject_files_folder(socket.assigns[:files_folder_uuid])
-    |> inject_featured_image(socket.assigns[:featured_image_uuid])
-  end
-
-  @doc """
-  After a `:new` save, renames the pending (random-named) folder to
-  the deterministic name now that the resource has a UUID. Non-fatal:
-  rename failures log and return `:ok` so the save flow isn't blocked.
-  """
-  def maybe_rename_pending_folder(socket, resource) do
-    with folder_uuid when is_binary(folder_uuid) <- socket.assigns[:files_folder_uuid],
-         {:ok, target_name} <- folder_name_for(resource),
-         %{} = folder <- Storage.get_folder(folder_uuid) do
-      case Storage.update_folder(folder, %{name: target_name}) do
-        {:ok, _} ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning(
-            "Pending folder rename failed for #{inspect(resource.__struct__)} #{resource.uuid}: #{inspect(reason)}"
-          )
-
-          :ok
-      end
-    else
-      _ -> :ok
-    end
-  end
-
-  # ── Template helpers ─────────────────────────────────────────────
-
-  @doc "Renders a byte count as a human string. Nil-safe."
-  def format_file_size(nil), do: "—"
-
-  def format_file_size(bytes) when is_integer(bytes) do
-    cond do
-      bytes >= 1_000_000_000 -> "#{Float.round(bytes / 1_000_000_000, 1)} GB"
-      bytes >= 1_000_000 -> "#{Float.round(bytes / 1_000_000, 1)} MB"
-      bytes >= 1_000 -> "#{Float.round(bytes / 1_000, 1)} KB"
-      true -> "#{bytes} B"
-    end
-  end
-
-  def format_file_size(_), do: "—"
-
-  @doc "Picks a heroicon name for a file based on its Storage type."
-  def file_icon(%{file_type: "image"}), do: "hero-photo"
-  def file_icon(%{file_type: "video"}), do: "hero-film"
-  def file_icon(%{file_type: "audio"}), do: "hero-musical-note"
-  def file_icon(%{file_type: "archive"}), do: "hero-archive-box"
-  def file_icon(%{mime_type: "application/pdf"}), do: "hero-document-text"
-  def file_icon(_), do: "hero-document"
-
-  @doc "Translates LiveView upload error atoms to user-facing text."
-  def upload_error_message(:too_large),
-    do: Gettext.gettext(PhoenixKitWeb.Gettext, "File is too large.")
-
-  def upload_error_message(:not_accepted),
-    do: Gettext.gettext(PhoenixKitWeb.Gettext, "File type not accepted.")
-
-  def upload_error_message(:too_many_files),
-    do: Gettext.gettext(PhoenixKitWeb.Gettext, "Too many files.")
-
-  def upload_error_message(other),
-    do:
-      Gettext.gettext(PhoenixKitWeb.Gettext, "Upload error: %{reason}",
-        reason: inspect(other)
-      )
-
-  # ── Public folder helpers (cross-draft callers) ──────────────────
-
-  @doc """
-  Renames a *known* pending folder UUID to match the resource's
-  deterministic name. The standard `maybe_rename_pending_folder/2` reads
-  the folder uuid from `socket.assigns[:files_folder_uuid]`, which only
-  works when there's a single active resource per LV. For
-  multi-resource LVs (e.g. several Space drafts saving on one global
-  Save click) the active socket assigns are stale w.r.t. inactive
-  drafts — this variant takes the folder uuid explicitly.
-
-  Non-fatal: rename failures log and return `:ok` so a half-failed
-  rename doesn't roll back the rest of the save.
-  """
-  @spec maybe_rename_pending_folder_for(String.t() | nil, any()) :: :ok
-  def maybe_rename_pending_folder_for(nil, _resource), do: :ok
-
-  def maybe_rename_pending_folder_for(folder_uuid, resource) when is_binary(folder_uuid) do
-    with {:ok, target_name} <- folder_name_for(resource),
-         %{} = folder <- Storage.get_folder(folder_uuid),
-         current_name when current_name != target_name <- folder.name do
-      case Storage.update_folder(folder, %{name: target_name}) do
-        {:ok, _} ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning(
-            "Pending folder rename failed for #{inspect(resource.__struct__)} #{resource.uuid}: #{inspect(reason)}"
-          )
-
-          :ok
-      end
-    else
-      _ -> :ok
-    end
-  end
-
-  @doc """
-  Returns `{:ok, "<prefix>-<uuid>"}` for known resource structs.
-  Public so multi-resource LVs can compute the target name without
-  re-implementing the prefix scheme.
-  """
-  @spec folder_name_for(any()) :: {:ok, String.t()} | :pending
-  def folder_name_for(%Location{uuid: uuid}) when is_binary(uuid),
-    do: {:ok, "location-#{uuid}"}
-
-  def folder_name_for(%Space{uuid: uuid}) when is_binary(uuid),
-    do: {:ok, "location-space-#{uuid}"}
-
-  def folder_name_for(_), do: :pending
-
-  # ── Internals ────────────────────────────────────────────────────
-
-  defp ensure_folder(socket) do
-    case socket.assigns[:files_folder_uuid] do
-      uuid when is_binary(uuid) ->
-        {:ok, uuid, socket}
-
-      _ ->
-        resource = socket.assigns[:attachments_resource]
-
-        case folder_name_for(resource) do
-          {:ok, name} -> find_or_create_folder(socket, name)
-          :pending -> create_pending_folder(socket)
-        end
-    end
-  end
-
-  defp find_or_create_folder(socket, folder_name) do
-    case find_folder_by_name(folder_name) do
-      %{uuid: uuid} ->
-        {:ok, uuid, assign(socket, :files_folder_uuid, uuid)}
-
-      nil ->
-        create_folder(socket, folder_name)
-    end
-  end
-
-  defp create_pending_folder(socket) do
-    create_folder(socket, "location-attachment-pending-#{Ecto.UUID.generate()}")
-  end
-
-  defp create_folder(socket, folder_name) do
-    user_uuid = current_user_uuid(socket)
-
-    case Storage.create_folder(%{name: folder_name, user_uuid: user_uuid}) do
-      {:ok, folder} -> {:ok, folder.uuid, assign(socket, :files_folder_uuid, folder.uuid)}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp find_folder_by_name(name) when is_binary(name) do
-    from(f in PhoenixKit.Modules.Storage.Folder,
-      where: f.name == ^name and is_nil(f.parent_uuid),
-      limit: 1
-    )
-    |> PhoenixKit.RepoHelper.repo().one()
-  rescue
-    error ->
-      Logger.warning("find_folder_by_name failed for #{name}: #{inspect(error)}")
-      nil
-  end
-
-  @files_grid_limit 200
-
-  defp list_files_in_folder(folder_uuid) do
-    linked_subq =
-      from(fl in FolderLink,
-        where: fl.folder_uuid == ^folder_uuid,
-        select: fl.file_uuid
-      )
-
-    from(f in File,
-      where:
-        (f.folder_uuid == ^folder_uuid or f.uuid in subquery(linked_subq)) and
-          f.status != "trashed",
-      order_by: [asc: f.inserted_at],
-      limit: @files_grid_limit
-    )
-    |> PhoenixKit.RepoHelper.repo().all()
-  rescue
-    error ->
-      Logger.warning("list_files_in_folder failed for #{folder_uuid}: #{inspect(error)}")
-      []
-  end
-
-  defp safe_get_file(uuid) when is_binary(uuid) do
-    Storage.get_file(uuid)
-  rescue
-    error ->
-      Logger.warning("Failed to load Storage file #{uuid}: #{inspect(error)}")
-      nil
-  end
-
-  defp safe_get_file(_), do: nil
-
-  defp current_user_uuid(socket) do
-    case socket.assigns[:phoenix_kit_current_user] do
-      %{uuid: uuid} -> uuid
-      _ -> nil
-    end
-  end
-
-  defp refresh_files_from_folder(socket) do
-    assign(socket, :files_state, %{files: compute_files_list(socket)})
-  end
-
-  defp apply_featured_image_selection(socket, []) do
-    assign(socket, featured_image_uuid: nil, featured_image_file: nil)
-  end
-
-  defp apply_featured_image_selection(socket, [uuid | _]) when is_binary(uuid) do
-    case safe_get_file(uuid) do
-      nil ->
-        put_flash(
-          socket,
-          :error,
-          Gettext.gettext(PhoenixKitWeb.Gettext, "Selected image could not be loaded.")
-        )
-
-      file ->
-        socket
-        |> assign(featured_image_uuid: uuid, featured_image_file: file)
-        |> refresh_files_from_folder()
-    end
-  end
-
-  defp maybe_clear_featured_if_matches(socket, uuid) do
-    if socket.assigns[:featured_image_uuid] == uuid do
-      assign(socket, featured_image_uuid: nil, featured_image_file: nil)
-    else
-      socket
-    end
   end
 
   defp store_upload(%{path: path}, entry, socket, folder_uuid) do
