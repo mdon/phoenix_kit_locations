@@ -10,6 +10,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   import PhoenixKitWeb.Components.Core.AdminPageHeader, only: [admin_page_header: 1]
   import PhoenixKitWeb.Components.Core.Icon, only: [icon: 1]
   import PhoenixKitWeb.Components.Core.Input
+  import PhoenixKitWeb.Components.Core.NavTabs, only: [nav_tabs: 1]
   import PhoenixKitWeb.Components.Core.Select
   import PhoenixKitWeb.Components.Core.Textarea
 
@@ -401,7 +402,16 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     end
   end
 
-  def handle_event("select_floor", %{"id" => id}, socket) do
+  # NavTabs sends the clicked tab id as `phx-value-tab` (the core
+  # component's convention) — accept either key for backwards-compat
+  # in case any other call site still uses `phx-value-id`.
+  def handle_event("select_floor", %{"tab" => id}, socket),
+    do: do_select_floor(socket, id)
+
+  def handle_event("select_floor", %{"id" => id}, socket),
+    do: do_select_floor(socket, id)
+
+  defp do_select_floor(socket, id) do
     case find_draft(socket.assigns.space_drafts, id) do
       %{deleted: false, space: %{kind: "floor"}} ->
         {:noreply, assign(socket, active_floor_id: id, active_room_id: nil)}
@@ -1284,29 +1294,24 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
           </p>
         </div>
 
-        <%!-- Floor tabs. Empty state shows only the + Add floor button. --%>
-        <div role="tablist" class="tabs tabs-bordered overflow-x-auto flex-nowrap">
-          <button
-            :for={f <- @floor_tabs}
-            type="button"
-            phx-click="select_floor"
-            phx-value-id={f.id}
-            class={[
-              "tab whitespace-nowrap",
-              if(@active_floor_id == f.id, do: "tab-active", else: ""),
-              if(!f.persisted?, do: "italic", else: "")
-            ]}
-            title={floor_tab_label(f)}
-          >
-            <span class="text-xs">{floor_tab_label(f)}</span>
-          </button>
+        <%!-- Floor tabs via the core `<.nav_tabs>` component. The "+ Add
+             floor" button can't ride inside the tab strip itself (the
+             component takes a fixed list), so it sits beside it in the
+             flex container — clicking it appends a new draft tab. --%>
+        <div class="flex flex-wrap items-center gap-2">
+          <.nav_tabs
+            :if={@floor_tabs != []}
+            active_tab={@active_floor_id || ""}
+            on_change="select_floor"
+            tabs={floor_nav_tab_maps(@floor_tabs)}
+          />
           <button
             type="button"
             phx-click="add_floor"
-            class="tab whitespace-nowrap"
+            class="btn btn-ghost btn-sm"
           >
             <.icon name="hero-plus" class="w-4 h-4 mr-1" />
-            <span class="text-xs">{gettext("Add floor")}</span>
+            {gettext("Add floor")}
           </button>
         </div>
 
@@ -1613,6 +1618,18 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp feature_label(key), do: key
 
   # ── Space helpers ────────────────────────────────────────────────
+
+  # Builds the maps `<.nav_tabs>` consumes for the floor strip. The
+  # `italic` flag isn't part of the core component's vocabulary, so
+  # non-persisted drafts get marked with a `*` suffix instead.
+  defp floor_nav_tab_maps(floors) do
+    Enum.map(floors, fn f ->
+      label =
+        if f.persisted?, do: floor_tab_label(f), else: "#{floor_tab_label(f)} *"
+
+      %{id: f.id, label: label}
+    end)
+  end
 
   # Floor tab label — pulls the live name from the draft's working
   # changeset so the tab reflects what the user is typing right now.

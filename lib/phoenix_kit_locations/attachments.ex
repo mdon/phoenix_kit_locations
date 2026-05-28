@@ -441,15 +441,58 @@ defmodule PhoenixKitLocations.Attachments do
         reason: inspect(other)
       )
 
-  # ── Internals ────────────────────────────────────────────────────
+  # ── Public folder helpers (cross-draft callers) ──────────────────
 
-  defp folder_name_for(%Location{uuid: uuid}) when is_binary(uuid),
+  @doc """
+  Renames a *known* pending folder UUID to match the resource's
+  deterministic name. The standard `maybe_rename_pending_folder/2` reads
+  the folder uuid from `socket.assigns[:files_folder_uuid]`, which only
+  works when there's a single active resource per LV. For
+  multi-resource LVs (e.g. several Space drafts saving on one global
+  Save click) the active socket assigns are stale w.r.t. inactive
+  drafts — this variant takes the folder uuid explicitly.
+
+  Non-fatal: rename failures log and return `:ok` so a half-failed
+  rename doesn't roll back the rest of the save.
+  """
+  @spec maybe_rename_pending_folder_for(String.t() | nil, any()) :: :ok
+  def maybe_rename_pending_folder_for(nil, _resource), do: :ok
+
+  def maybe_rename_pending_folder_for(folder_uuid, resource) when is_binary(folder_uuid) do
+    with {:ok, target_name} <- folder_name_for(resource),
+         %{} = folder <- Storage.get_folder(folder_uuid),
+         current_name when current_name != target_name <- folder.name do
+      case Storage.update_folder(folder, %{name: target_name}) do
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "Pending folder rename failed for #{inspect(resource.__struct__)} #{resource.uuid}: #{inspect(reason)}"
+          )
+
+          :ok
+      end
+    else
+      _ -> :ok
+    end
+  end
+
+  @doc """
+  Returns `{:ok, "<prefix>-<uuid>"}` for known resource structs.
+  Public so multi-resource LVs can compute the target name without
+  re-implementing the prefix scheme.
+  """
+  @spec folder_name_for(any()) :: {:ok, String.t()} | :pending
+  def folder_name_for(%Location{uuid: uuid}) when is_binary(uuid),
     do: {:ok, "location-#{uuid}"}
 
-  defp folder_name_for(%Space{uuid: uuid}) when is_binary(uuid),
+  def folder_name_for(%Space{uuid: uuid}) when is_binary(uuid),
     do: {:ok, "location-space-#{uuid}"}
 
-  defp folder_name_for(_), do: :pending
+  def folder_name_for(_), do: :pending
+
+  # ── Internals ────────────────────────────────────────────────────
 
   defp ensure_folder(socket) do
     case socket.assigns[:files_folder_uuid] do
