@@ -914,6 +914,31 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
 
     ~H"""
     <div class="flex flex-col mx-auto max-w-2xl px-4 py-8 gap-6">
+      <%!-- Tiny JS hook that pushes `set_active_upload_scope` on
+           `dragenter` so drag-and-drop uploads route to the right
+           folder even when the user hasn't clicked the dropzone first.
+           Inline because the registration must run BEFORE LiveSocket
+           is constructed (the spread `{...window.PhoenixKitHooks}` in
+           the parent app's app.js captures whatever's there at that
+           moment). Idempotency guard so LV re-renders don't try to
+           re-register. --%>
+      <script>
+        window.PhoenixKitHooks = window.PhoenixKitHooks || {};
+        window.PhoenixKitHooks.PkLocationsUploadScope = window.PhoenixKitHooks.PkLocationsUploadScope || {
+          mounted() {
+            const push = () => {
+              const scope = this.el.dataset.scope;
+              if (scope) this.pushEvent("set_active_upload_scope", { scope: scope });
+            };
+            // `dragenter` fires when a file is dragged INTO the dropzone
+            // — well before the actual `drop` event the upload listens
+            // for. By the time the drop hits, the server has already
+            // received the scope and set `:active_upload_scope`.
+            this.el.addEventListener("dragenter", push);
+          }
+        };
+      </script>
+
       <%!-- Folder-scoped media selector (featured-image picker). The
            dropzone in each Files card uses the LV upload channel
            directly — modal is featured-image-only. `scope_folder_id`
@@ -1709,16 +1734,20 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       <p class="text-xs text-base-content/50">{@files_subtitle}</p>
     </div>
 
-    <%!-- Dropzone: phx-click sets the active upload scope so
-         handle_progress routes to the right folder when the file
-         picker resolves. The label also forwards clicks to the
-         hidden <input type=file>. --%>
+    <%!-- Dropzone: phx-click covers the click path; the JS hook
+         (registered at the top of the page render) sets the scope
+         on `dragenter` so drag-and-drop uploads route to the right
+         folder without requiring a prior click. The label also
+         forwards clicks to the hidden <input type=file>. --%>
     <label
+      id={"pk-locations-dropzone-#{@scope}"}
       for={@uploads.attachment_files.ref}
       class="flex flex-col items-center justify-center gap-2 py-6 border-2 border-dashed border-base-300 rounded-md bg-base-200/20 hover:bg-base-200/40 transition-colors cursor-pointer"
       phx-click="set_active_upload_scope"
       phx-value-scope={@scope}
       phx-drop-target={@uploads.attachment_files.ref}
+      phx-hook="PkLocationsUploadScope"
+      data-scope={@scope}
     >
       <.icon name="hero-cloud-arrow-up" class="w-8 h-8 text-base-content/40" />
       <div class="text-sm text-base-content/60">
