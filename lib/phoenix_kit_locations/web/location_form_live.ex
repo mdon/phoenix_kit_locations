@@ -76,33 +76,36 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     end
   end
 
-  # ── Spaces state ─────────────────────────────────────────────────
+  # ── Spaces state — staged drafts ─────────────────────────────────
 
-  # On :new, spaces don't exist yet (location not persisted) — show
-  # nothing. On :edit, load the tree-walk list and select the first
-  # space as the active tab (or :new for the blank-form tab when the
-  # location has no spaces yet). The list query is rescued so a
-  # missing migration (V122 not yet applied) doesn't blow up the form.
+  # Spaces commit together with the Location: clicking "+ Add space"
+  # appends an in-memory draft; edits update the draft's working
+  # changeset; nothing touches the DB until the global Save / Create
+  # button fires. The drafts list is the single source of truth for
+  # both new (`persisted?: false`) and existing (`persisted?: true`)
+  # spaces; existing ones marked `deleted: true` are persisted as
+  # deletions on save.
+  #
+  # The list query is rescued so a missing migration (V122 not yet
+  # applied on the host) leaves the Spaces card empty rather than
+  # crashing the whole form.
   defp assign_spaces_state(socket, :new, _location) do
-    assign(socket,
-      spaces: [],
-      active_space_uuid: nil,
-      space: nil,
-      space_changeset: nil,
-      space_form: nil
-    )
+    assign(socket, space_drafts: [], active_space_id: nil)
   end
 
   defp assign_spaces_state(socket, :edit, location) do
-    spaces = safe_list_spaces(location.uuid)
+    drafts =
+      location.uuid
+      |> safe_list_spaces()
+      |> Enum.map(&persisted_draft/1)
 
     active =
-      case spaces do
-        [] -> :new
-        [first | _] -> first.uuid
+      case drafts do
+        [] -> nil
+        [first | _] -> first.id
       end
 
-    assign_active_space(socket, spaces, active, location.uuid)
+    assign(socket, space_drafts: drafts, active_space_id: active)
   end
 
   defp safe_list_spaces(location_uuid) do
@@ -113,32 +116,56 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       []
   end
 
-  defp assign_active_space(socket, spaces, :new, location_uuid) do
+  # Draft shape:
+  #
+  #   %{
+  #     id: String.t(),                  # tab key (DB uuid for persisted, "new-<uuid>" otherwise)
+  #     persisted?: boolean(),
+  #     space: Space.t(),                # base struct the changeset casts on top of
+  #     changeset: Ecto.Changeset.t(),   # working changeset; cleared/replaced on validate_space
+  #     deleted: boolean()               # true => issue a delete on global save (persisted only)
+  #   }
+  defp persisted_draft(%Space{} = space) do
+    %{
+      id: space.uuid,
+      persisted?: true,
+      space: space,
+      changeset: Spaces.change_space(space),
+      deleted: false
+    }
+  end
+
+  # A fresh draft for an as-yet-unsaved space. `location_uuid` may be
+  # nil on :new — we resolve it at global-save time once the parent
+  # Location has its UUID.
+  defp new_draft(location_uuid) do
     space = %Space{location_uuid: location_uuid, kind: "room", status: "active"}
-    cs = Spaces.change_space(space)
 
-    socket
-    |> assign(spaces: spaces, active_space_uuid: :new, space: space)
-    |> assign_space_form(cs)
+    %{
+      id: "new-" <> Ecto.UUID.generate(),
+      persisted?: false,
+      space: space,
+      changeset: Spaces.change_space(space),
+      deleted: false
+    }
   end
 
-  defp assign_active_space(socket, spaces, uuid, _location_uuid) do
-    case Enum.find(spaces, &(&1.uuid == uuid)) do
-      nil ->
-        # UUID no longer in the list (just deleted, etc.) — fall back to :new.
-        assign_active_space(socket, spaces, :new, socket.assigns.location.uuid)
+  defp find_draft(drafts, id), do: Enum.find(drafts, &(&1.id == id))
 
-      space ->
-        cs = Spaces.change_space(space)
+  defp update_draft(drafts, id, fun) when is_function(fun, 1) do
+    Enum.map(drafts, fn d -> if d.id == id, do: fun.(d), else: d end)
+  end
 
-        socket
-        |> assign(spaces: spaces, active_space_uuid: uuid, space: space)
-        |> assign_space_form(cs)
+  # Drafts visible in the tab strip — hides ones marked deleted (they
+  # still ride along in `space_drafts` so the global save can issue
+  # the actual delete, but the user shouldn't see them anymore).
+  defp visible_drafts(drafts), do: Enum.reject(drafts, & &1.deleted)
+
+  defp first_visible_id(drafts) do
+    case visible_drafts(drafts) do
+      [] -> nil
+      [first | _] -> first.id
     end
-  end
-
-  defp assign_space_form(socket, %Ecto.Changeset{} = cs) do
-    assign(socket, space_changeset: cs, space_form: to_form(cs, as: :space))
   end
 
   defp load_location(:new, _params) do
@@ -304,78 +331,71 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   def handle_event("clear_featured_image", _params, socket),
     do: Attachments.clear_featured_image(socket)
 
-  # ── Spaces (sub-form within the Location page on :edit) ─────────
+  # ── Spaces (staged drafts — commit on global save) ─────────────
 
-  def handle_event("select_space", %{"uuid" => "new"}, socket) do
-    {:noreply,
-     assign_active_space(socket, socket.assigns.spaces, :new, socket.assigns.location.uuid)}
+  # Appends a fresh draft to the list and selects it. Location UUID may
+  # be nil here on :new — resolved when the global save fires.
+  def handle_event("add_space", _params, socket) do
+    location_uuid = socket.assigns.location && socket.assigns.location.uuid
+    draft = new_draft(location_uuid)
+    drafts = socket.assigns.space_drafts ++ [draft]
+    {:noreply, assign(socket, space_drafts: drafts, active_space_id: draft.id)}
   end
 
-  def handle_event("select_space", %{"uuid" => uuid}, socket) do
-    {:noreply,
-     assign_active_space(socket, socket.assigns.spaces, uuid, socket.assigns.location.uuid)}
+  def handle_event("select_space", %{"id" => id}, socket) do
+    case find_draft(socket.assigns.space_drafts, id) do
+      %{deleted: false} -> {:noreply, assign(socket, active_space_id: id)}
+      _ -> {:noreply, socket}
+    end
   end
 
+  # Editing the active draft. We rebuild the changeset on top of the
+  # draft's base `space` (NOT a fresh %Space{}) so the changes shape
+  # remains a delta from the persisted baseline — critical for the
+  # global save's "no-op when no changes" check on existing rows.
   def handle_event("validate_space", %{"space" => params}, socket) do
-    params =
-      merge_translatable_params(params, socket, @space_translatable_fields,
-        changeset: socket.assigns.space_changeset,
-        preserve_fields: @space_preserve_fields
-      )
+    id = socket.assigns.active_space_id
 
-    cs =
-      socket.assigns.space
-      |> Spaces.change_space(params)
-      |> Map.put(:action, :validate)
+    case find_draft(socket.assigns.space_drafts, id) do
+      nil ->
+        {:noreply, socket}
 
-    {:noreply, assign_space_form(socket, cs)}
-  end
+      draft ->
+        params =
+          merge_translatable_params(params, socket, @space_translatable_fields,
+            changeset: draft.changeset,
+            preserve_fields: @space_preserve_fields
+          )
+          |> normalize_parent_uuid()
 
-  def handle_event("save_space", %{"space" => params}, socket) do
-    params =
-      params
-      |> merge_translatable_params(socket, @space_translatable_fields,
-        changeset: socket.assigns.space_changeset,
-        preserve_fields: @space_preserve_fields
-      )
-      |> Map.put("location_uuid", socket.assigns.location.uuid)
-      |> normalize_parent_uuid()
+        cs =
+          draft.space
+          |> Spaces.change_space(params)
+          |> Map.put(:action, :validate)
 
-    result =
-      case socket.assigns.active_space_uuid do
-        :new -> Spaces.create_space(params, actor_opts(socket))
-        _uuid -> Spaces.update_space(socket.assigns.space, params, actor_opts(socket))
-      end
+        drafts = update_draft(socket.assigns.space_drafts, id, &Map.put(&1, :changeset, cs))
 
-    handle_space_save_result(socket, result)
+        {:noreply, assign(socket, space_drafts: drafts)}
+    end
   end
 
   def handle_event("delete_space", _params, socket) do
-    case socket.assigns.active_space_uuid do
-      :new ->
-        # No persisted row — just reset the blank form.
-        {:noreply,
-         assign_active_space(socket, socket.assigns.spaces, :new, socket.assigns.location.uuid)}
+    id = socket.assigns.active_space_id
 
-      _uuid ->
-        case Spaces.delete_space(socket.assigns.space, actor_opts(socket)) do
-          {:ok, _} ->
-            spaces = safe_list_spaces(socket.assigns.location.uuid)
+    case find_draft(socket.assigns.space_drafts, id) do
+      nil ->
+        {:noreply, socket}
 
-            next_active =
-              case spaces do
-                [] -> :new
-                [first | _] -> first.uuid
-              end
+      %{persisted?: false} ->
+        # Never reached the DB — drop the draft entirely.
+        drafts = Enum.reject(socket.assigns.space_drafts, &(&1.id == id))
+        {:noreply, assign(socket, space_drafts: drafts, active_space_id: first_visible_id(drafts))}
 
-            {:noreply,
-             socket
-             |> put_flash(:info, gettext("Space deleted."))
-             |> assign_active_space(spaces, next_active, socket.assigns.location.uuid)}
-
-          {:error, _reason} ->
-            {:noreply, put_flash(socket, :error, gettext("Could not delete space."))}
-        end
+      %{persisted?: true} ->
+        # Mark for deletion; the actual `Spaces.delete_space/2` fires
+        # when the global Save/Create button commits.
+        drafts = update_draft(socket.assigns.space_drafts, id, &Map.put(&1, :deleted, true))
+        {:noreply, assign(socket, space_drafts: drafts, active_space_id: first_visible_id(drafts))}
     end
   end
 
@@ -387,28 +407,13 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
 
   defp normalize_parent_uuid(params), do: params
 
-  defp handle_space_save_result(socket, {:ok, saved}) do
-    spaces = safe_list_spaces(socket.assigns.location.uuid)
-
-    {:noreply,
-     socket
-     |> put_flash(:info, gettext("Space saved."))
-     |> assign_active_space(spaces, saved.uuid, socket.assigns.location.uuid)}
-  end
-
-  defp handle_space_save_result(socket, {:error, %Ecto.Changeset{} = cs}) do
-    {:noreply, assign_space_form(socket, Map.put(cs, :action, :validate))}
-  end
-
-  defp handle_space_save_result(socket, {:error, reason}) do
-    {:noreply, put_flash(socket, :error, Errors.message(reason))}
-  end
-
   defp save_location(socket, :new, params) do
     case Locations.create_location(params, actor_opts(socket)) do
       {:ok, location} ->
         _ = Attachments.maybe_rename_pending_folder(socket, location)
-        sync_types_and_redirect(socket, location.uuid, gettext("Location created."))
+
+        flash = persist_space_drafts(socket.assigns.space_drafts, location.uuid, socket)
+        sync_types_and_redirect(socket, location.uuid, gettext("Location created."), flash)
 
       {:error, changeset} ->
         {:noreply, assign_form(socket, Map.put(changeset, :action, :validate))}
@@ -418,11 +423,95 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp save_location(socket, :edit, params) do
     case Locations.update_location(socket.assigns.location, params, actor_opts(socket)) do
       {:ok, location} ->
-        sync_types_and_redirect(socket, location.uuid, gettext("Location updated."))
+        flash = persist_space_drafts(socket.assigns.space_drafts, location.uuid, socket)
+        sync_types_and_redirect(socket, location.uuid, gettext("Location updated."), flash)
 
       {:error, changeset} ->
         {:noreply, assign_form(socket, Map.put(changeset, :action, :validate))}
     end
+  end
+
+  # Iterates the draft list and applies each one's pending action
+  # against the DB. Best-effort: failures are logged and surface as a
+  # warning flash on the redirect; we don't roll back the Location
+  # save. Returns `nil` on success or `{flash_kind, msg}` to override
+  # the success flash with a warning when some drafts failed.
+  defp persist_space_drafts([], _location_uuid, _socket), do: nil
+
+  defp persist_space_drafts(drafts, location_uuid, socket) do
+    opts = actor_opts(socket)
+
+    errors =
+      drafts
+      |> Enum.map(&persist_draft(&1, location_uuid, opts))
+      |> Enum.filter(&match?({:error, _, _}, &1))
+
+    case errors do
+      [] -> nil
+      _ -> {:warning, draft_error_summary(errors)}
+    end
+  end
+
+  # Per-draft persistence dispatch. Tags errors with the draft id so
+  # the summary can point at which one failed.
+  defp persist_draft(%{persisted?: false, deleted: true}, _loc_uuid, _opts), do: :ok
+
+  defp persist_draft(%{persisted?: true, deleted: true} = draft, _loc_uuid, opts) do
+    case Spaces.delete_space(draft.space, opts) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, draft.id, reason}
+    end
+  end
+
+  defp persist_draft(%{persisted?: false} = draft, location_uuid, opts) do
+    attrs =
+      draft.changeset
+      |> Ecto.Changeset.apply_changes()
+      |> space_to_attrs()
+      |> Map.put("location_uuid", location_uuid)
+
+    case Spaces.create_space(attrs, opts) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, draft.id, reason}
+    end
+  end
+
+  defp persist_draft(%{persisted?: true, changeset: %{changes: changes}}, _loc_uuid, _opts)
+       when map_size(changes) == 0,
+       do: :ok
+
+  defp persist_draft(%{persisted?: true} = draft, _loc_uuid, opts) do
+    attrs =
+      draft.changeset
+      |> Ecto.Changeset.apply_changes()
+      |> space_to_attrs()
+
+    case Spaces.update_space(draft.space, attrs, opts) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, draft.id, reason}
+    end
+  end
+
+  # Extracts the params shape `Spaces.{create,update}_space` expects
+  # from the effective Space struct (base + applied changes). We pass
+  # all relevant fields explicitly so the underlying cast/3 sees them
+  # — passing only the changes map would lose default values from the
+  # draft's base struct (e.g. `kind: "room"` on a brand-new draft).
+  defp space_to_attrs(%Space{} = s) do
+    %{
+      "kind" => s.kind,
+      "name" => s.name,
+      "description" => s.description,
+      "notes" => s.notes,
+      "status" => s.status,
+      "position" => s.position,
+      "parent_uuid" => s.parent_uuid,
+      "data" => s.data || %{}
+    }
+  end
+
+  defp draft_error_summary(errors) do
+    gettext("Location saved, but %{count} space(s) failed to save.", count: length(errors))
   end
 
   @impl true
@@ -440,14 +529,20 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     {:noreply, socket}
   end
 
-  defp sync_types_and_redirect(socket, location_uuid, message) do
+  defp sync_types_and_redirect(socket, location_uuid, message, draft_flash \\ nil) do
     type_uuids = MapSet.to_list(socket.assigns.linked_type_uuids)
+
+    flash_overrides =
+      case draft_flash do
+        nil -> [{:info, message}]
+        {kind, msg} -> [{kind, msg}]
+      end
 
     case Locations.sync_location_types(location_uuid, type_uuids, actor_opts(socket)) do
       {:ok, _sync_state} ->
         {:noreply,
-         socket
-         |> put_flash(:info, message)
+         flash_overrides
+         |> Enum.reduce(socket, fn {k, m}, s -> put_flash(s, k, m) end)
          |> push_navigate(to: Paths.index())}
 
       {:error, _} ->
@@ -672,13 +767,13 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       </.form>
 
       <%!-- ═══════════════════════════════════════════════════════ --%>
-      <%!-- SPACES (rooms / floors / zones) — edit mode only       --%>
+      <%!-- SPACES (rooms / floors / zones)                        --%>
       <%!-- Sits between the two halves of the Location form so it  --%>
       <%!-- visually reads as a subdivision of the address above.   --%>
+      <%!-- Drafts only commit when the global Save / Create button --%>
+      <%!-- fires — on both :new and :edit.                         --%>
       <%!-- ═══════════════════════════════════════════════════════ --%>
-      <%= if @action == :edit do %>
-        {render_spaces_section(assigns)}
-      <% end %>
+      {render_spaces_section(assigns)}
 
       <.form
         for={@form}
@@ -942,18 +1037,28 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     """
   end
 
-  # The Spaces section is its own `<.form>` element — a sibling of the
-  # two halves of the Location form, NOT nested (HTML forbids nested
-  # forms). Each space has its own validate/save cycle; the Location's
-  # Save button doesn't bundle space changes.
+  # The Spaces card — a sibling of the two halves of the Location form
+  # (HTML forbids nested forms). Drafts live in `@space_drafts` and
+  # commit only when the global Save/Create button fires.
   defp render_spaces_section(assigns) do
+    visible = visible_drafts(assigns.space_drafts)
+    active = active_draft(assigns)
+
     assigns =
       assigns
+      |> assign(:visible_drafts, visible)
+      |> assign(:active_draft, active)
+      |> assign(:active_form, active && to_form(active.changeset, as: :space))
+      |> assign(:active_changeset, active && active.changeset)
       |> assign(
         :space_lang_data,
-        space_lang_data(assigns[:space_changeset], assigns.current_lang, assigns.multilang_enabled)
+        space_lang_data(
+          active && active.changeset,
+          assigns.current_lang,
+          assigns.multilang_enabled
+        )
       )
-      |> assign(:parent_options, parent_options(assigns.spaces, assigns[:active_space_uuid]))
+      |> assign(:parent_options, parent_options_for_drafts(visible, active))
       |> assign(:kind_options, kind_options())
 
     ~H"""
@@ -962,86 +1067,95 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         <div class="flex flex-col gap-0.5">
           <h2 class="text-base font-semibold text-base-content/80 flex items-center gap-2">
             <.icon name="hero-squares-2x2" class="w-4 h-4" /> {gettext("Spaces")}
-            <span :if={@spaces != []} class="badge badge-sm badge-ghost ml-1">
-              {length(@spaces)}
+            <span :if={@visible_drafts != []} class="badge badge-sm badge-ghost ml-1">
+              {length(@visible_drafts)}
             </span>
           </h2>
           <p class="text-xs text-base-content/50">
-            {gettext("Break this location into rooms, floors, or zones inside the building above.")}
+            {gettext("Break this location into rooms, floors, or zones inside the building above. Changes save together with the location below.")}
           </p>
         </div>
 
-        <%!-- Tab strip only when there's something to switch between.
-             When the location has no spaces yet, the form below stands
-             alone as the "add the first space" form — a single +Add
-             tab on its own reads as awkward chrome. --%>
-        <div
-          :if={@spaces != []}
-          role="tablist"
-          class="tabs tabs-bordered overflow-x-auto flex-nowrap"
-        >
+        <%!-- Tab strip — one tab per draft + "+ Add" trailing tab. --%>
+        <div role="tablist" class="tabs tabs-bordered overflow-x-auto flex-nowrap">
           <button
-            :for={s <- @spaces}
+            :for={d <- @visible_drafts}
             type="button"
             phx-click="select_space"
-            phx-value-uuid={s.uuid}
+            phx-value-id={d.id}
             class={[
               "tab whitespace-nowrap",
-              if(@active_space_uuid == s.uuid, do: "tab-active", else: "")
+              if(@active_space_id == d.id, do: "tab-active", else: ""),
+              if(!d.persisted?, do: "italic", else: "")
             ]}
-            title={space_tab_label(s, @spaces)}
+            title={draft_tab_label(d, @visible_drafts)}
           >
-            <span class="text-xs">{space_tab_label(s, @spaces)}</span>
+            <span class="text-xs">{draft_tab_label(d, @visible_drafts)}</span>
           </button>
           <button
             type="button"
-            phx-click="select_space"
-            phx-value-uuid="new"
-            class={[
-              "tab whitespace-nowrap",
-              if(@active_space_uuid == :new, do: "tab-active", else: "")
-            ]}
+            phx-click="add_space"
+            class="tab whitespace-nowrap"
           >
             <.icon name="hero-plus" class="w-4 h-4 mr-1" />
             <span class="text-xs">{gettext("Add space")}</span>
           </button>
         </div>
 
+        <%!-- Empty state — no drafts at all. Just the +Add tab above
+             plus a hint. No fields are shown until the user clicks Add. --%>
+        <div :if={@visible_drafts == []} class="text-sm text-base-content/50 py-4">
+          {gettext("No spaces yet. Click \"Add space\" above to break this location into rooms, floors, or zones.")}
+        </div>
+
+        <%!-- Idle state — drafts exist but none selected. Prompt the
+             user to pick one without rendering a stale form. --%>
+        <div
+          :if={@visible_drafts != [] and is_nil(@active_draft)}
+          class="text-sm text-base-content/50 py-4"
+        >
+          {gettext("Pick a tab above to edit a space, or click \"Add space\" for a new one.")}
+        </div>
+
+        <%!-- Active draft form. NOT a nested submission — `phx-submit`
+             is intentionally omitted: nothing here saves on its own.
+             The phx-change="validate_space" pipe keeps the active
+             draft's changeset live so the global Save handler picks
+             up the latest values. --%>
         <.form
-          for={@space_form}
+          :if={@active_draft}
+          for={@active_form}
           id="location-space-form"
           action="#"
           phx-change="validate_space"
-          phx-submit="save_space"
           class="flex flex-col gap-4"
         >
-          <%!-- Kind / Parent / Status on one row keeps the form short. --%>
+          <%!-- Kind / Parent / Status share one row to keep the form
+               short. Parent picker offers only PERSISTED spaces — new
+               drafts can't be picked as parents because they don't yet
+               have a real UUID to point at. --%>
           <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
             <.select
-              field={@space_form[:kind]}
+              field={@active_form[:kind]}
               label={gettext("Kind")}
               options={@kind_options}
             />
             <.select
-              field={@space_form[:parent_uuid]}
+              field={@active_form[:parent_uuid]}
               label={gettext("Parent space")}
               options={@parent_options}
             />
             <.select
-              field={@space_form[:status]}
+              field={@active_form[:status]}
               label={gettext("Status")}
               options={[{gettext("Active"), "active"}, {gettext("Inactive"), "inactive"}]}
             />
           </div>
 
-          <%!-- HTML5 `required` is intentionally NOT set — clicking
-               Add Space with an empty name should reach the LV so the
-               server-side "Name can't be blank" error renders in the
-               field below, not a browser tooltip on top of it. --%>
           <.translatable_field
             field_name="name"
             form_prefix="space"
-            changeset={@space_changeset}
+            changeset={@active_changeset}
             schema_field={:name}
             multilang_enabled={@multilang_enabled}
             current_lang={@current_lang}
@@ -1055,7 +1169,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
           <.translatable_field
             field_name="description"
             form_prefix="space"
-            changeset={@space_changeset}
+            changeset={@active_changeset}
             schema_field={:description}
             multilang_enabled={@multilang_enabled}
             current_lang={@current_lang}
@@ -1067,15 +1181,13 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
             class="w-full"
           />
 
-          <%!-- Internal notes is admin-only and rarely set — collapse
-               into a details/summary to keep the form short by default. --%>
           <details class="text-sm">
             <summary class="cursor-pointer text-base-content/60 select-none">
               {gettext("Internal notes (admin-only)")}
             </summary>
             <div class="mt-2">
               <.textarea
-                field={@space_form[:notes]}
+                field={@active_form[:notes]}
                 label={nil}
                 rows="2"
                 placeholder={gettext("Admin-only notes...")}
@@ -1084,24 +1196,24 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
             </div>
           </details>
 
-          <div class="flex justify-between items-center pt-2">
+          <%!-- Delete removes the tab from the staging list. For
+               persisted drafts it queues the actual DB delete for the
+               global save; for new ones it just drops the in-memory
+               entry. Either way, the Location form's Save button is
+               the only commit point. --%>
+          <div class="flex justify-end pt-2">
             <button
-              :if={@active_space_uuid != :new}
               type="button"
               phx-click="delete_space"
-              data-confirm={gettext("Delete this space and any of its sub-spaces? This cannot be undone.")}
+              data-confirm={
+                if @active_draft.persisted?,
+                  do: gettext("Mark this space (and any sub-spaces) for deletion? The change applies when you save the location."),
+                  else: gettext("Discard this unsaved space?")
+              }
               class="btn btn-ghost btn-sm text-error"
             >
-              <.icon name="hero-trash" class="w-4 h-4 mr-1" /> {gettext("Delete")}
-            </button>
-            <div :if={@active_space_uuid == :new} />
-
-            <button
-              type="submit"
-              class="btn btn-primary btn-sm phx-submit-loading:opacity-75"
-              phx-disable-with={gettext("Saving...")}
-            >
-              {if @active_space_uuid == :new, do: gettext("Add Space"), else: gettext("Save Space")}
+              <.icon name="hero-trash" class="w-4 h-4 mr-1" />
+              {if @active_draft.persisted?, do: gettext("Remove"), else: gettext("Discard")}
             </button>
           </div>
         </.form>
@@ -1109,6 +1221,18 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     </div>
     """
   end
+
+  # Resolves the active draft from the drafts list, falling through
+  # nil-active or stale-id states to nil (which the template treats as
+  # the "no fields" idle state).
+  defp active_draft(%{space_drafts: drafts, active_space_id: id}) when is_binary(id) do
+    case Enum.find(drafts, &(&1.id == id and not &1.deleted)) do
+      nil -> nil
+      draft -> draft
+    end
+  end
+
+  defp active_draft(_), do: nil
 
   # Small local component — keeps the five section headings in the
   # form template identical in shape (icon + label) without repeating
@@ -1168,45 +1292,67 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   end
 
   # Builds "Kind: Name" labels with " → " breadcrumb prefix for nested
-  # spaces. Bounded walk so a corrupted parent chain can't spin forever.
-  defp space_tab_label(%Space{} = space, spaces) do
-    own = "#{kind_label(space.kind)}: #{space.name || gettext("(unnamed)")}"
+  # drafts. Each draft's display fields come from
+  # `apply_changes(changeset)` so the tab label reflects the user's
+  # in-progress typing, not the stale persisted baseline.
+  # Bounded walk so a corrupted parent chain can't spin forever.
+  defp draft_tab_label(draft, drafts) do
+    space = Ecto.Changeset.apply_changes(draft.changeset)
+    own = draft_label_own(space, draft.persisted?)
 
-    case breadcrumb_prefix(space.parent_uuid, spaces, 32) do
+    case draft_breadcrumb_prefix(space.parent_uuid, drafts, 32) do
       "" -> own
       prefix -> "#{prefix} → #{own}"
     end
   end
 
-  defp breadcrumb_prefix(nil, _spaces, _hops_remaining), do: ""
-  defp breadcrumb_prefix(_uuid, _spaces, 0), do: "…"
+  defp draft_label_own(space, persisted?) do
+    name =
+      cond do
+        space.name && space.name != "" -> space.name
+        persisted? -> gettext("(unnamed)")
+        true -> gettext("New space")
+      end
 
-  defp breadcrumb_prefix(uuid, spaces, hops_remaining) do
-    case Enum.find(spaces, &(&1.uuid == uuid)) do
+    "#{kind_label(space.kind)}: #{name}"
+  end
+
+  defp draft_breadcrumb_prefix(nil, _drafts, _hops_remaining), do: ""
+  defp draft_breadcrumb_prefix(_uuid, _drafts, 0), do: "…"
+
+  defp draft_breadcrumb_prefix(uuid, drafts, hops_remaining) do
+    case Enum.find(drafts, &(&1.id == uuid)) do
       nil ->
         ""
 
-      parent ->
-        own = "#{kind_label(parent.kind)}: #{parent.name || gettext("(unnamed)")}"
+      parent_draft ->
+        parent_space = Ecto.Changeset.apply_changes(parent_draft.changeset)
+        own = draft_label_own(parent_space, parent_draft.persisted?)
 
-        case breadcrumb_prefix(parent.parent_uuid, spaces, hops_remaining - 1) do
+        case draft_breadcrumb_prefix(parent_space.parent_uuid, drafts, hops_remaining - 1) do
           "" -> own
           prefix -> "#{prefix} → #{own}"
         end
     end
   end
 
-  # Parent picker options: all spaces in this location EXCEPT the
-  # active one. Indirect cycles are blocked by `Spaces.update_space/3`
-  # at save time — we don't try to compute descendants here to keep
+  # Parent picker options. Excludes:
+  #   - the active draft itself (can't parent yourself);
+  #   - any non-persisted drafts (their UUID-strings are draft ids,
+  #     not real `phoenix_kit_location_spaces.uuid` values, so the FK
+  #     insert would fail).
+  # Indirect cycles for persisted-to-persisted moves are blocked by
+  # `Spaces.update_space/3` at save time — not recomputed here to keep
   # render cheap.
-  defp parent_options(spaces, active_uuid) do
+  defp parent_options_for_drafts(visible_drafts, active_draft) do
     root = {gettext("— None (top level) —"), ""}
+    active_id = active_draft && active_draft.id
 
     children =
-      spaces
-      |> Enum.reject(fn s -> s.uuid == active_uuid end)
-      |> Enum.map(fn s -> {space_tab_label(s, spaces), s.uuid} end)
+      visible_drafts
+      |> Enum.filter(& &1.persisted?)
+      |> Enum.reject(fn d -> d.id == active_id end)
+      |> Enum.map(fn d -> {draft_tab_label(d, visible_drafts), d.id} end)
 
     [root | children]
   end
