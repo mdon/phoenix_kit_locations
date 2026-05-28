@@ -451,26 +451,25 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp active_focus_for_invalid(%{space: %{kind: "room"}} = draft),
     do: {parent_id_of(draft), draft.id}
 
-  # Short, kind-aware flash. Includes counts when multiple drafts
-  # share the same failure so the message stays readable when the
-  # user has many empty drafts.
+  # Short, kind-aware flash with proper noun + verb agreement.
+  # Listing each combination as its own gettext entry trades a bit
+  # of code for translations that read naturally — pluralization
+  # rules vary by language so the alternative (interpolating both
+  # noun and verb into one string) doesn't translate cleanly.
   defp invalid_drafts_flash(invalid_drafts) do
-    kinds =
-      invalid_drafts
-      |> Enum.frequencies_by(& &1.space.kind)
+    f = Enum.count(invalid_drafts, &(&1.space.kind == "floor"))
+    r = Enum.count(invalid_drafts, &(&1.space.kind == "room"))
 
-    parts =
-      Enum.map(kinds, fn
-        {"floor", 1} -> gettext("1 floor")
-        {"floor", n} -> gettext("%{n} floors", n: n)
-        {"room", 1} -> gettext("1 room")
-        {"room", n} -> gettext("%{n} rooms", n: n)
-        {other, n} -> "#{n} #{other}"
-      end)
-
-    gettext("Please fix the highlighted issues in %{list} below before saving.",
-      list: Enum.join(parts, ", ")
-    )
+    case {f, r} do
+      {1, 0} -> gettext("1 floor needs attention.")
+      {n, 0} -> gettext("%{n} floors need attention.", n: n)
+      {0, 1} -> gettext("1 room needs attention.")
+      {0, n} -> gettext("%{n} rooms need attention.", n: n)
+      {1, 1} -> gettext("1 floor and 1 room need attention.")
+      {fc, 1} -> gettext("%{f} floors and 1 room need attention.", f: fc)
+      {1, rc} -> gettext("1 floor and %{r} rooms need attention.", r: rc)
+      {fc, rc} -> gettext("%{f} floors and %{r} rooms need attention.", f: fc, r: rc)
+    end
   end
 
   # ── Attachments (featured image modal + inline files dropzone) ──
