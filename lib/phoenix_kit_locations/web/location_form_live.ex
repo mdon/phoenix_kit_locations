@@ -1440,7 +1440,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
               type="text"
               label={gettext("Address Line 1")}
               placeholder={gettext("Street address, P.O. box")}
-              phx-blur="check_address"
             />
 
             <.input
@@ -1451,15 +1450,14 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
             />
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <.input
-                field={@form[:city]}
-                type="text"
-                label={gettext("City")}
-                phx-blur="check_address"
-              />
+              <.input field={@form[:city]} type="text" label={gettext("City")} />
               <.input field={@form[:state]} type="text" label={gettext("State / Region")} />
             </div>
 
+            <%!-- `check_address` reads all 3 address fields off the
+                 changeset; one blur on postal_code (the natural
+                 "I'm done with the address" point) does the same job
+                 as binding to all three. --%>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <.input
                 field={@form[:postal_code]}
