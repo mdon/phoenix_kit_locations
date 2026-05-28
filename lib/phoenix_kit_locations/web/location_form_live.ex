@@ -6,6 +6,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
 
   require Logger
 
+  import PhoenixKitWeb.Components.LanguageSwitcher, only: [language_switcher: 1]
   import PhoenixKitWeb.Components.MultilangForm
   import PhoenixKitWeb.Components.Core.AdminPageHeader, only: [admin_page_header: 1]
   import PhoenixKitWeb.Components.Core.Icon, only: [icon: 1]
@@ -128,7 +129,12 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   #     persisted?: boolean(),
   #     space: Space.t(),                # base struct the changeset casts on top of
   #     changeset: Ecto.Changeset.t(),   # working changeset; cleared/replaced on validate_space
-  #     deleted: boolean()               # true => issue a delete on global save (persisted only)
+  #     deleted: boolean(),              # true => issue a delete on global save (persisted only)
+  #     current_lang: String.t() | nil   # draft-local active language for the multilang selector
+  #                                      # rendered inside the floor / room form. nil falls back
+  #                                      # to the page's `:primary_language`. Lets the user edit,
+  #                                      # say, Floor 1 in English while Floor 2 is on Spanish
+  #                                      # without each form's selector dragging the others along.
   #   }
   defp persisted_draft(%Space{} = space) do
     %{
@@ -136,7 +142,8 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       persisted?: true,
       space: space,
       changeset: Spaces.change_space(space),
-      deleted: false
+      deleted: false,
+      current_lang: nil
     }
   end
 
@@ -158,9 +165,17 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       persisted?: false,
       space: space,
       changeset: Spaces.change_space(space),
-      deleted: false
+      deleted: false,
+      current_lang: nil
     }
   end
+
+  # Falls back to the page's primary language when the draft has no
+  # per-form lang override yet. `safe` — both args may be nil on a
+  # multilang-disabled host; the renderer treats nil as the
+  # single-language default.
+  defp draft_current_lang(%{current_lang: lang}, _primary) when is_binary(lang), do: lang
+  defp draft_current_lang(_, primary), do: primary
 
   # Splits drafts by view-context. Floors are top-level tabs; rooms
   # live under the active floor.
@@ -435,11 +450,34 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     {:noreply, assign(socket, active_room_id: nil)}
   end
 
+  # Per-form language switch — only affects the active draft, NOT the
+  # page-level multilang_tabs at the top of the form. Lets each
+  # floor/room form be on its own language independently.
+  def handle_event("switch_space_language", %{"language" => lang}, socket) do
+    id = socket.assigns.active_room_id || socket.assigns.active_floor_id
+
+    case find_draft(socket.assigns.space_drafts, id) do
+      nil ->
+        {:noreply, socket}
+
+      _draft ->
+        drafts =
+          update_draft(socket.assigns.space_drafts, id, &Map.put(&1, :current_lang, lang))
+
+        {:noreply, assign(socket, space_drafts: drafts)}
+    end
+  end
+
   # Editing the active draft (room takes precedence over floor — when
   # both an editor is open AND the floor form is visible, the open
   # editor is the one the user is typing into). The form's phx-change
   # only fires for the one being typed in, so this single handler
   # routes both via the active-id chain.
+  #
+  # merge_translatable_params reads `current_lang` from socket assigns,
+  # but spaces forms have per-draft language state — so we feed it a
+  # shadow socket whose `:current_lang` is the active draft's chosen
+  # language. The original socket is untouched.
   def handle_event("validate_space", %{"space" => params}, socket) do
     id = socket.assigns.active_room_id || socket.assigns.active_floor_id
 
@@ -448,8 +486,10 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         {:noreply, socket}
 
       draft ->
+        draft_socket = with_draft_lang(socket, draft)
+
         params =
-          merge_translatable_params(params, socket, @space_translatable_fields,
+          merge_translatable_params(params, draft_socket, @space_translatable_fields,
             changeset: draft.changeset,
             preserve_fields: @space_preserve_fields
           )
@@ -463,6 +503,16 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
 
         {:noreply, assign(socket, space_drafts: drafts)}
     end
+  end
+
+  # Builds a "shadow" socket whose `:current_lang` matches the draft's
+  # per-form active language. Used at the validate_space boundary so
+  # `merge_translatable_params` keys its multilang merge against the
+  # draft-local lang instead of the page-level one. Doesn't mutate
+  # the real socket — `merge_translatable_params` only reads.
+  defp with_draft_lang(socket, draft) do
+    lang = draft_current_lang(draft, socket.assigns[:primary_language])
+    %{socket | assigns: Map.put(socket.assigns, :current_lang, lang)}
   end
 
   # Marks the active floor for delete and cascades to all of its room
@@ -1339,18 +1389,29 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   # room editor is open (the room editor replaces the rooms list).
   defp render_floor_view(assigns) do
     floor = assigns.active_floor
+    draft_lang = draft_current_lang(floor, assigns.primary_language)
 
     assigns =
       assigns
       |> assign(:floor_form, to_form(floor.changeset, as: :space))
       |> assign(:floor_changeset, floor.changeset)
       |> assign(:floor, floor)
+      |> assign(:floor_lang, draft_lang)
       |> assign(
         :floor_lang_data,
-        space_lang_data(floor.changeset, assigns.current_lang, assigns.multilang_enabled)
+        space_lang_data(floor.changeset, draft_lang, assigns.multilang_enabled)
       )
 
     ~H"""
+    <%!-- Per-floor language selector — independent from the page-
+         level multilang_tabs above. Switching this only re-keys the
+         translatable inputs in THIS floor's form via `switch_space_language`. --%>
+    <.draft_language_strip
+      :if={@multilang_enabled and match?([_, _ | _], @language_tabs)}
+      language_tabs={@language_tabs}
+      current_lang={@floor_lang}
+    />
+
     <.form
       for={@floor_form}
       id="location-floor-form"
@@ -1364,7 +1425,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         changeset={@floor_changeset}
         schema_field={:name}
         multilang_enabled={@multilang_enabled}
-        current_lang={@current_lang}
+        current_lang={@floor_lang}
         primary_language={@primary_language}
         lang_data={@floor_lang_data}
         label={gettext("Floor name")}
@@ -1378,7 +1439,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         changeset={@floor_changeset}
         schema_field={:description}
         multilang_enabled={@multilang_enabled}
-        current_lang={@current_lang}
+        current_lang={@floor_lang}
         primary_language={@primary_language}
         lang_data={@floor_lang_data}
         label={gettext("Description")}
@@ -1479,15 +1540,17 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   # edited. Single form bound to the active room's changeset.
   defp render_room_editor(assigns) do
     room = assigns.active_room
+    draft_lang = draft_current_lang(room, assigns.primary_language)
 
     assigns =
       assigns
       |> assign(:room_form, to_form(room.changeset, as: :space))
       |> assign(:room_changeset, room.changeset)
       |> assign(:room, room)
+      |> assign(:room_lang, draft_lang)
       |> assign(
         :room_lang_data,
-        space_lang_data(room.changeset, assigns.current_lang, assigns.multilang_enabled)
+        space_lang_data(room.changeset, draft_lang, assigns.multilang_enabled)
       )
 
     ~H"""
@@ -1502,6 +1565,14 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       <span>{gettext("Editing room")}</span>
     </div>
 
+    <%!-- Per-room language selector — independent from the floor's
+         and the page's. --%>
+    <.draft_language_strip
+      :if={@multilang_enabled and match?([_, _ | _], @language_tabs)}
+      language_tabs={@language_tabs}
+      current_lang={@room_lang}
+    />
+
     <.form
       for={@room_form}
       id="location-room-form"
@@ -1515,7 +1586,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         changeset={@room_changeset}
         schema_field={:name}
         multilang_enabled={@multilang_enabled}
-        current_lang={@current_lang}
+        current_lang={@room_lang}
         primary_language={@primary_language}
         lang_data={@room_lang_data}
         label={gettext("Room name")}
@@ -1529,7 +1600,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         changeset={@room_changeset}
         schema_field={:description}
         multilang_enabled={@multilang_enabled}
-        current_lang={@current_lang}
+        current_lang={@room_lang}
         primary_language={@primary_language}
         lang_data={@room_lang_data}
         label={gettext("Description")}
@@ -1577,6 +1648,31 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         </button>
       </div>
     </.form>
+    """
+  end
+
+  # Per-form language strip used inside floor / room editors. Wraps
+  # the core <.language_switcher> with the right click event so the
+  # switch updates only the active draft's `current_lang` — NOT the
+  # page-level `:current_lang` that drives the Location's own
+  # multilang_tabs at the top of the form.
+  attr :language_tabs, :list, required: true
+  attr :current_lang, :string, required: true
+
+  defp draft_language_strip(assigns) do
+    ~H"""
+    <div class="mb-1">
+      <.language_switcher
+        languages={@language_tabs}
+        current_language={@current_lang}
+        on_click="switch_space_language"
+        show_flags={true}
+        show_primary={true}
+        primary_divider={true}
+        variant={:tabs}
+        size={:sm}
+      />
+    </div>
     """
   end
 
