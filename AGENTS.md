@@ -63,6 +63,7 @@ This is a **PhoenixKit module** that implements the `PhoenixKit.Module` behaviou
   - Features: JSONB map of boolean flags (wheelchair_accessible, elevator, parking, etc.)
   - Internal: notes (admin-only), status (active/inactive)
 - **LocationTypeAssignment** (`phoenix_kit_location_type_assignments`) — many-to-many join table (a location can have multiple types, e.g. both "Showroom" and "Storage")
+- **Space** (`phoenix_kit_location_spaces`, V122) — nested floors / rooms inside a Location. Required `location_uuid` FK (cascade), optional `parent_uuid` self-ref FK (cascade) forming a 2-level tree (`@kinds ~w(floor room)`). `kind` is CHECK-constrained at the DB. `data` JSONB mirrors the Location's: attachment pointers (`files_folder_uuid`, `featured_image_uuid`) + multilang translation tree. The "child belongs to same Location as parent" cross-row invariant is enforced in `PhoenixKitLocations.Spaces.validate_parent_location/1` (composite-FK alternative is heavier than the consumer surface justifies)
 
 ### Web Layer
 
@@ -113,9 +114,29 @@ Location and LocationType forms use PhoenixKit's `MultilangForm` component syste
 
 ### Location Form Layout
 
-The form is split into two cards:
+The form is split into two cards with a Spaces section between them:
 1. **Public Information** (top card) — translatable fields, address, contact, features & amenities
-2. **Internal** (bottom card) — admin-only notes, status, location type assignment
+2. **Spaces** (middle card) — staged floor + room drafts (see below)
+3. **Internal** (bottom card) — admin-only notes, status, location type assignment
+
+The two `<.form>` halves are bound to the same `@form` so the Spaces card can sit between them without HTML's no-nested-forms rule biting. Both halves carry `phx-change="validate"` / `phx-submit="save"`; see `merge_running_changes/2` for why validate/save handlers carry forward the running changeset's `changes`.
+
+### Spaces — staged drafts
+
+Floors and rooms commit together with the Location: clicking "+ Add floor" / "+ Add room" appends an in-memory draft; edits update the draft's working changeset; nothing touches the DB until the global Save / Create button fires.
+
+The `space_drafts` assign is the single source of truth — both new (`persisted?: false`) and existing (`persisted?: true`) spaces live in it; existing ones marked `deleted: true` are persisted as deletions on save. The list query is rescued so a missing migration (V122 not yet applied on the host) leaves the Spaces card empty rather than crashing the whole form.
+
+**Validation gate:** save is blocked when any non-orphan draft has invalid changes. The block-flash is kind-aware ("Floor 2 needs a name") via `draft_error_summary/2` + `identify_draft/2` + `humanize_field/1`. Orphan-blank floor drafts (no name, no children) are silently skipped — abandoning them mid-edit is the natural escape hatch.
+
+**Persistence pipeline** (`persist_space_drafts/3`):
+1. `persist_floor_drafts/5` — orphan-blank floors skip; deletes go first; creates record their new UUID into an `id_map` so child rooms can resolve their parent FK.
+2. `persist_room_drafts/6` — rooms whose floor is being deleted skip (the DB CASCADE will catch them); creates resolve `parent_uuid` from the `id_map`; updates and persists.
+3. Partial failures: `finish_save/5` stays on the page, reloads the persisted drafts, preserves the failed in-memory drafts (so the user can fix and retry instead of losing all their typing), and re-mounts attachment scopes.
+
+**Per-draft Files + language:** each draft gets its own `Attachments` scope (keyed by draft id) for featured-image picker + multi-file uploads, and its own multilang state. Scope mounts on creation; on save, pending folders are renamed to point at the freshly-saved Space's UUID.
+
+**Floor delete cascade** (`cascade_delete_floor/2` + `classify_for_floor_delete/3`): deleting a floor marks itself + its child rooms for delete (for persisted ones) or drops them entirely (for new in-memory drafts that were never staged). The DB CASCADE fires only when the floor's delete is committed; the marking just hides them in the UI immediately.
 
 ### Settings Keys
 
@@ -126,16 +147,19 @@ The form is split into two cards:
 ```
 lib/phoenix_kit_locations.ex                    # Main module (PhoenixKit.Module behaviour)
 lib/phoenix_kit_locations/
-├── locations.ex                               # Context module (CRUD, type sync, address detection, activity logging)
+├── locations.ex                               # Locations context (CRUD, type sync, address detection, activity logging)
+├── spaces.ex                                  # Spaces context (CRUD on nested floors/rooms, parent-location + cycle guards)
+├── attachments.ex                             # Scope-aware files / featured-image picker for Location + each Space draft
 ├── errors.ex                                  # Atom → gettext message dispatcher for UI boundary
 ├── paths.ex                                   # Centralized URL path helpers
 ├── schemas/
 │   ├── location.ex                            # Location schema + changeset
 │   ├── location_type.ex                       # LocationType schema + changeset
-│   └── location_type_assignment.ex            # Many-to-many join table schema
+│   ├── location_type_assignment.ex            # Many-to-many join table schema
+│   └── space.ex                               # Space schema (floor/room) + changeset
 └── web/
-    ├── locations_live.ex                      # Index page (locations/types tabs)
-    ├── location_form_live.ex                  # Create/edit location (multilang, features, types)
+    ├── locations_live.ex                      # Index page (locations/types subtabs via dashboard nav)
+    ├── location_form_live.ex                  # Create/edit location (multilang, features, types, staged Spaces)
     └── location_type_form_live.ex             # Create/edit location type (multilang)
 ```
 
@@ -176,15 +200,19 @@ CI runs the same chain via `mix quality.ci` (format-check mode). If `precommit` 
 
 ## Database & Migrations
 
-This repo ships **no production migrations** — all runtime database tables are created by the parent [phoenix_kit](https://github.com/BeamLabEU/phoenix_kit) project (V90). This module only defines Ecto schemas that map to those tables.
+This repo ships **no production migrations** — all runtime database tables are created by the parent [phoenix_kit](https://github.com/BeamLabEU/phoenix_kit) project. This module only defines Ecto schemas that map to those tables.
 
 The test suite builds its schema by running core's versioned migrations directly via `PhoenixKit.Migration.ensure_current/2` in `test/test_helper.exs` — no module-owned DDL.
 
-### Tables (created by PhoenixKit V90)
+### Tables (created by PhoenixKit core)
 
+Base — `V90`:
 - `phoenix_kit_location_types` — name, description, status, data (JSONB for multilang), timestamps
 - `phoenix_kit_locations` — name, description, public_notes, address_line_1, address_line_2, city, state, postal_code, country, phone, email, website, notes, status, features (JSONB), data (JSONB for multilang), timestamps
 - `phoenix_kit_location_type_assignments` — location_uuid (FK CASCADE), location_type_uuid (FK CASCADE), timestamps; unique index on (location_uuid, location_type_uuid)
+
+Added later — `V122`:
+- `phoenix_kit_location_spaces` — uuid (PK), location_uuid (FK CASCADE, required), parent_uuid (self-ref FK CASCADE, optional), kind (CHECK `in ('floor', 'room', 'hall', 'suite', 'section', 'zone', 'aisle', 'shelf', 'corner')`), name, description, notes, status, position, data (JSONB), timestamps. Indexed on (location_uuid), (parent_uuid), and the composite (location_uuid, parent_uuid, position) for sibling-ordering queries.
 
 ## Tailwind CSS Scanning
 
