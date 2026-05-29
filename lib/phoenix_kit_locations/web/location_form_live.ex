@@ -296,20 +296,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     {:noreply, socket |> assign_form(changeset) |> assign(:address_warning, nil)}
   end
 
-  # The Location form renders as TWO `<.form>` elements (Public Info on
-  # top, Files + Internal on the bottom, with the Spaces card sitting
-  # between them) — both bound to the same `@form`. A `phx-change` from
-  # either half only submits its own inputs, so a naive rebuild from
-  # `socket.assigns.location` would clobber the OTHER form's
-  # in-progress edits. We merge the running changeset's `changes` map
-  # back in so every validate keeps the full edit picture.
-  defp merge_running_changes(params, %Ecto.Changeset{changes: changes}) do
-    existing =
-      Map.new(changes, fn {k, v} -> {Atom.to_string(k), v} end)
-
-    Map.merge(existing, params)
-  end
-
   def handle_event("toggle_type", %{"uuid" => uuid}, socket) do
     linked = socket.assigns.linked_type_uuids
 
@@ -396,6 +382,229 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
          )
          |> put_flash(:error, invalid_drafts_flash(invalid_drafts, validated_drafts))}
     end
+  end
+
+  # ── Attachments (featured image modal + inline files dropzone) ──
+  # All events take a `scope` via phx-value-scope so multiple Files
+  # cards on the same page route to their own state.
+
+  def handle_event("open_featured_image_picker", %{"scope" => scope}, socket),
+    do: Attachments.open_featured_image_picker(socket, scope)
+
+  def handle_event("close_media_selector", _params, socket),
+    do: {:noreply, Attachments.close_media_selector(socket)}
+
+  def handle_event("cancel_upload", %{"ref" => ref}, socket),
+    do: Attachments.cancel_attachment_upload(socket, ref)
+
+  def handle_event("remove_file", %{"scope" => scope, "uuid" => uuid}, socket),
+    do: Attachments.trash_file(socket, scope, uuid)
+
+  def handle_event("clear_featured_image", %{"scope" => scope}, socket),
+    do: Attachments.clear_featured_image(socket, scope)
+
+  # Marks which Files card the next upload is for. Wired to phx-click
+  # on each dropzone label.
+  def handle_event("set_active_upload_scope", %{"scope" => scope}, socket),
+    do: {:noreply, Attachments.set_active_upload_scope(socket, scope)}
+
+  # ── Spaces (staged drafts — commit on global save) ─────────────
+
+  # Two-level model: floor tabs at the top, rooms inside the active
+  # floor. Floors are always root (`parent_uuid == nil`); rooms always
+  # carry their floor's id as `parent_uuid`. Both kinds stage as
+  # in-memory drafts and only persist when the Location's bottom
+  # Save / Create button fires.
+
+  def handle_event("add_floor", _params, socket) do
+    location_uuid = socket.assigns.location && socket.assigns.location.uuid
+    draft = new_draft(location_uuid, "floor")
+    drafts = socket.assigns.space_drafts ++ [draft]
+
+    {:noreply,
+     socket
+     |> assign(
+       space_drafts: drafts,
+       active_floor_id: draft.id,
+       active_room_id: nil
+     )
+     |> Attachments.mount(scope: draft.id, resource: draft.space)}
+  end
+
+  def handle_event("add_room", _params, socket) do
+    case socket.assigns.active_floor_id do
+      nil ->
+        # Shouldn't happen — the Add room button is only rendered
+        # inside an active floor tab. Defensive no-op.
+        {:noreply, socket}
+
+      floor_id ->
+        location_uuid = socket.assigns.location && socket.assigns.location.uuid
+        draft = new_draft(location_uuid, "room", floor_id)
+        drafts = socket.assigns.space_drafts ++ [draft]
+
+        {:noreply,
+         socket
+         |> assign(
+           space_drafts: drafts,
+           active_room_id: draft.id
+         )
+         |> Attachments.mount(scope: draft.id, resource: draft.space)}
+    end
+  end
+
+  # NavTabs sends the clicked tab id as `phx-value-tab` (the core
+  # component's convention) — accept either key for backwards-compat
+  # in case any other call site still uses `phx-value-id`.
+  def handle_event("select_floor", %{"tab" => id}, socket),
+    do: do_select_floor(socket, id)
+
+  def handle_event("select_floor", %{"id" => id}, socket),
+    do: do_select_floor(socket, id)
+
+  def handle_event("edit_room", %{"id" => id}, socket) do
+    case find_draft(socket.assigns.space_drafts, id) do
+      %{deleted: false, space: %{kind: "room"}} ->
+        {:noreply, assign(socket, active_room_id: id)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("close_room_editor", _params, socket) do
+    {:noreply, assign(socket, active_room_id: nil)}
+  end
+
+  # Per-form language switch — only affects the active draft, NOT the
+  # page-level multilang_tabs at the top of the form. Lets each
+  # floor/room form be on its own language independently.
+  def handle_event("switch_space_language", %{"language" => lang}, socket) do
+    id = socket.assigns.active_room_id || socket.assigns.active_floor_id
+
+    case find_draft(socket.assigns.space_drafts, id) do
+      nil ->
+        {:noreply, socket}
+
+      _draft ->
+        drafts =
+          update_draft(socket.assigns.space_drafts, id, &Map.put(&1, :current_lang, lang))
+
+        {:noreply, assign(socket, space_drafts: drafts)}
+    end
+  end
+
+  # Editing the active draft (room takes precedence over floor — when
+  # both an editor is open AND the floor form is visible, the open
+  # editor is the one the user is typing into). The form's phx-change
+  # only fires for the one being typed in, so this single handler
+  # routes both via the active-id chain.
+  #
+  # merge_translatable_params reads `current_lang` from socket assigns,
+  # but spaces forms have per-draft language state — so we feed it a
+  # shadow socket whose `:current_lang` is the active draft's chosen
+  # language. The original socket is untouched.
+  def handle_event("validate_space", %{"space" => params}, socket) do
+    id = socket.assigns.active_room_id || socket.assigns.active_floor_id
+
+    case find_draft(socket.assigns.space_drafts, id) do
+      nil ->
+        {:noreply, socket}
+
+      draft ->
+        draft_socket = with_draft_lang(socket, draft)
+
+        params =
+          merge_translatable_params(params, draft_socket, @space_translatable_fields,
+            changeset: draft.changeset,
+            preserve_fields: @space_preserve_fields
+          )
+
+        cs =
+          draft.space
+          |> Spaces.change_space(params)
+          |> Map.put(:action, :validate)
+
+        drafts = update_draft(socket.assigns.space_drafts, id, &Map.put(&1, :changeset, cs))
+
+        {:noreply, assign(socket, space_drafts: drafts)}
+    end
+  end
+
+  # Marks the active floor for delete and cascades to all of its room
+  # drafts (new ones drop entirely; persisted ones get queued for the
+  # CASCADE that fires in `Spaces.delete_space/2`). Keeps the visible
+  # state consistent with what the global save will commit. Also frees
+  # the attachment scopes for any drafts that were entirely dropped
+  # (no need to keep their state around — they're gone).
+  def handle_event("delete_floor", _params, socket) do
+    case find_draft(socket.assigns.space_drafts, socket.assigns.active_floor_id) do
+      %{space: %{kind: "floor"}} = floor ->
+        old_ids = MapSet.new(socket.assigns.space_drafts, & &1.id)
+        drafts = cascade_delete_floor(socket.assigns.space_drafts, floor)
+        kept_ids = MapSet.new(drafts, & &1.id)
+        dropped = MapSet.difference(old_ids, kept_ids)
+
+        next_floor = first_visible_floor_id(drafts)
+
+        socket =
+          socket
+          |> assign(
+            space_drafts: drafts,
+            active_floor_id: next_floor,
+            active_room_id: nil
+          )
+          |> forget_dropped_scopes(dropped)
+
+        {:noreply, socket}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("delete_room", %{"id" => id}, socket) do
+    case find_draft(socket.assigns.space_drafts, id) do
+      %{space: %{kind: "room"}, persisted?: false} ->
+        # Never reached the DB — drop entirely + free its scope state.
+        drafts = Enum.reject(socket.assigns.space_drafts, &(&1.id == id))
+
+        active_room =
+          if socket.assigns.active_room_id == id, do: nil, else: socket.assigns.active_room_id
+
+        {:noreply,
+         socket
+         |> assign(space_drafts: drafts, active_room_id: active_room)
+         |> Attachments.forget_scope(id)}
+
+      %{space: %{kind: "room"}, persisted?: true} ->
+        # Keep the scope state — the user can still see the files
+        # were attached to this room until they hit Save. The deletion
+        # commits then; the row + cascaded folder go away with it.
+        drafts = update_draft(socket.assigns.space_drafts, id, &Map.put(&1, :deleted, true))
+
+        active_room =
+          if socket.assigns.active_room_id == id, do: nil, else: socket.assigns.active_room_id
+
+        {:noreply, assign(socket, space_drafts: drafts, active_room_id: active_room)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  # The Location form renders as TWO `<.form>` elements (Public Info on
+  # top, Files + Internal on the bottom, with the Spaces card sitting
+  # between them) — both bound to the same `@form`. A `phx-change` from
+  # either half only submits its own inputs, so a naive rebuild from
+  # `socket.assigns.location` would clobber the OTHER form's
+  # in-progress edits. We merge the running changeset's `changes` map
+  # back in so every validate keeps the full edit picture.
+  defp merge_running_changes(params, %Ecto.Changeset{changes: changes}) do
+    existing =
+      Map.new(changes, fn {k, v} -> {Atom.to_string(k), v} end)
+
+    Map.merge(existing, params)
   end
 
   # Rebuilds each draft's changeset with full Space-validation rules
@@ -568,84 +777,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     gettext("%{init}, and %{last}", init: init, last: last)
   end
 
-  # ── Attachments (featured image modal + inline files dropzone) ──
-  # All events take a `scope` via phx-value-scope so multiple Files
-  # cards on the same page route to their own state.
-
-  def handle_event("open_featured_image_picker", %{"scope" => scope}, socket),
-    do: Attachments.open_featured_image_picker(socket, scope)
-
-  def handle_event("close_media_selector", _params, socket),
-    do: {:noreply, Attachments.close_media_selector(socket)}
-
-  def handle_event("cancel_upload", %{"ref" => ref}, socket),
-    do: Attachments.cancel_attachment_upload(socket, ref)
-
-  def handle_event("remove_file", %{"scope" => scope, "uuid" => uuid}, socket),
-    do: Attachments.trash_file(socket, scope, uuid)
-
-  def handle_event("clear_featured_image", %{"scope" => scope}, socket),
-    do: Attachments.clear_featured_image(socket, scope)
-
-  # Marks which Files card the next upload is for. Wired to phx-click
-  # on each dropzone label.
-  def handle_event("set_active_upload_scope", %{"scope" => scope}, socket),
-    do: {:noreply, Attachments.set_active_upload_scope(socket, scope)}
-
-  # ── Spaces (staged drafts — commit on global save) ─────────────
-
-  # Two-level model: floor tabs at the top, rooms inside the active
-  # floor. Floors are always root (`parent_uuid == nil`); rooms always
-  # carry their floor's id as `parent_uuid`. Both kinds stage as
-  # in-memory drafts and only persist when the Location's bottom
-  # Save / Create button fires.
-
-  def handle_event("add_floor", _params, socket) do
-    location_uuid = socket.assigns.location && socket.assigns.location.uuid
-    draft = new_draft(location_uuid, "floor")
-    drafts = socket.assigns.space_drafts ++ [draft]
-
-    {:noreply,
-     socket
-     |> assign(
-       space_drafts: drafts,
-       active_floor_id: draft.id,
-       active_room_id: nil
-     )
-     |> Attachments.mount(scope: draft.id, resource: draft.space)}
-  end
-
-  def handle_event("add_room", _params, socket) do
-    case socket.assigns.active_floor_id do
-      nil ->
-        # Shouldn't happen — the Add room button is only rendered
-        # inside an active floor tab. Defensive no-op.
-        {:noreply, socket}
-
-      floor_id ->
-        location_uuid = socket.assigns.location && socket.assigns.location.uuid
-        draft = new_draft(location_uuid, "room", floor_id)
-        drafts = socket.assigns.space_drafts ++ [draft]
-
-        {:noreply,
-         socket
-         |> assign(
-           space_drafts: drafts,
-           active_room_id: draft.id
-         )
-         |> Attachments.mount(scope: draft.id, resource: draft.space)}
-    end
-  end
-
-  # NavTabs sends the clicked tab id as `phx-value-tab` (the core
-  # component's convention) — accept either key for backwards-compat
-  # in case any other call site still uses `phx-value-id`.
-  def handle_event("select_floor", %{"tab" => id}, socket),
-    do: do_select_floor(socket, id)
-
-  def handle_event("select_floor", %{"id" => id}, socket),
-    do: do_select_floor(socket, id)
-
   defp do_select_floor(socket, id) do
     case find_draft(socket.assigns.space_drafts, id) do
       %{deleted: false, space: %{kind: "floor"}} ->
@@ -653,75 +784,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
 
       _ ->
         {:noreply, socket}
-    end
-  end
-
-  def handle_event("edit_room", %{"id" => id}, socket) do
-    case find_draft(socket.assigns.space_drafts, id) do
-      %{deleted: false, space: %{kind: "room"}} ->
-        {:noreply, assign(socket, active_room_id: id)}
-
-      _ ->
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event("close_room_editor", _params, socket) do
-    {:noreply, assign(socket, active_room_id: nil)}
-  end
-
-  # Per-form language switch — only affects the active draft, NOT the
-  # page-level multilang_tabs at the top of the form. Lets each
-  # floor/room form be on its own language independently.
-  def handle_event("switch_space_language", %{"language" => lang}, socket) do
-    id = socket.assigns.active_room_id || socket.assigns.active_floor_id
-
-    case find_draft(socket.assigns.space_drafts, id) do
-      nil ->
-        {:noreply, socket}
-
-      _draft ->
-        drafts =
-          update_draft(socket.assigns.space_drafts, id, &Map.put(&1, :current_lang, lang))
-
-        {:noreply, assign(socket, space_drafts: drafts)}
-    end
-  end
-
-  # Editing the active draft (room takes precedence over floor — when
-  # both an editor is open AND the floor form is visible, the open
-  # editor is the one the user is typing into). The form's phx-change
-  # only fires for the one being typed in, so this single handler
-  # routes both via the active-id chain.
-  #
-  # merge_translatable_params reads `current_lang` from socket assigns,
-  # but spaces forms have per-draft language state — so we feed it a
-  # shadow socket whose `:current_lang` is the active draft's chosen
-  # language. The original socket is untouched.
-  def handle_event("validate_space", %{"space" => params}, socket) do
-    id = socket.assigns.active_room_id || socket.assigns.active_floor_id
-
-    case find_draft(socket.assigns.space_drafts, id) do
-      nil ->
-        {:noreply, socket}
-
-      draft ->
-        draft_socket = with_draft_lang(socket, draft)
-
-        params =
-          merge_translatable_params(params, draft_socket, @space_translatable_fields,
-            changeset: draft.changeset,
-            preserve_fields: @space_preserve_fields
-          )
-
-        cs =
-          draft.space
-          |> Spaces.change_space(params)
-          |> Map.put(:action, :validate)
-
-        drafts = update_draft(socket.assigns.space_drafts, id, &Map.put(&1, :changeset, cs))
-
-        {:noreply, assign(socket, space_drafts: drafts)}
     end
   end
 
@@ -733,68 +795,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp with_draft_lang(socket, draft) do
     lang = draft_current_lang(draft, socket.assigns[:primary_language])
     %{socket | assigns: Map.put(socket.assigns, :current_lang, lang)}
-  end
-
-  # Marks the active floor for delete and cascades to all of its room
-  # drafts (new ones drop entirely; persisted ones get queued for the
-  # CASCADE that fires in `Spaces.delete_space/2`). Keeps the visible
-  # state consistent with what the global save will commit. Also frees
-  # the attachment scopes for any drafts that were entirely dropped
-  # (no need to keep their state around — they're gone).
-  def handle_event("delete_floor", _params, socket) do
-    case find_draft(socket.assigns.space_drafts, socket.assigns.active_floor_id) do
-      %{space: %{kind: "floor"}} = floor ->
-        old_ids = MapSet.new(socket.assigns.space_drafts, & &1.id)
-        drafts = cascade_delete_floor(socket.assigns.space_drafts, floor)
-        kept_ids = MapSet.new(drafts, & &1.id)
-        dropped = MapSet.difference(old_ids, kept_ids)
-
-        next_floor = first_visible_floor_id(drafts)
-
-        socket =
-          socket
-          |> assign(
-            space_drafts: drafts,
-            active_floor_id: next_floor,
-            active_room_id: nil
-          )
-          |> forget_dropped_scopes(dropped)
-
-        {:noreply, socket}
-
-      _ ->
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event("delete_room", %{"id" => id}, socket) do
-    case find_draft(socket.assigns.space_drafts, id) do
-      %{space: %{kind: "room"}, persisted?: false} ->
-        # Never reached the DB — drop entirely + free its scope state.
-        drafts = Enum.reject(socket.assigns.space_drafts, &(&1.id == id))
-
-        active_room =
-          if socket.assigns.active_room_id == id, do: nil, else: socket.assigns.active_room_id
-
-        {:noreply,
-         socket
-         |> assign(space_drafts: drafts, active_room_id: active_room)
-         |> Attachments.forget_scope(id)}
-
-      %{space: %{kind: "room"}, persisted?: true} ->
-        # Keep the scope state — the user can still see the files
-        # were attached to this room until they hit Save. The deletion
-        # commits then; the row + cascaded folder go away with it.
-        drafts = update_draft(socket.assigns.space_drafts, id, &Map.put(&1, :deleted, true))
-
-        active_room =
-          if socket.assigns.active_room_id == id, do: nil, else: socket.assigns.active_room_id
-
-        {:noreply, assign(socket, space_drafts: drafts, active_room_id: active_room)}
-
-      _ ->
-        {:noreply, socket}
-    end
   end
 
   defp forget_dropped_scopes(socket, %MapSet{} = dropped) do
@@ -878,7 +878,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       location.uuid |> safe_list_spaces() |> Enum.map(&persisted_draft/1)
 
     failed_drafts =
-      Enum.filter(socket.assigns.space_drafts, fn d -> MapSet.member?(failed_ids, d.id) end)
+      Enum.filter(socket.assigns.space_drafts, fn d -> d.id in failed_ids end)
 
     new_drafts = fresh_persisted ++ failed_drafts
 
@@ -929,7 +929,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   #
   # Best-effort: per-draft failures log + surface as a warning flash on
   # the redirect; we don't roll back the Location save.
-  defp persist_space_drafts([], _location_uuid, _socket), do: {nil, MapSet.new()}
+  defp persist_space_drafts([], _location_uuid, _socket), do: {nil, []}
 
   defp persist_space_drafts(drafts, location_uuid, socket) do
     opts = actor_opts(socket)
@@ -968,7 +968,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       persist_room_drafts(rooms, skip_parent_floor_ids, id_map, location_uuid, opts, socket)
 
     errors = floor_errors ++ room_errors
-    failed_ids = MapSet.new(errors, fn {:error, id, _reason} -> id end)
+    failed_ids = Enum.map(errors, fn {:error, id, _reason} -> id end)
 
     flash =
       case errors do
@@ -1137,9 +1137,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     end
   end
 
-  defp draft_id?(id) when is_binary(id), do: String.starts_with?(id, "new-")
-  defp draft_id?(_), do: false
-
   defp persist_room(%{persisted?: true, changeset: cs} = room, id_map, _loc, opts, socket) do
     has_field_changes? = map_size(cs.changes) > 0
     has_attachment_changes? = scope_has_attachment_changes?(socket, room.id, room.space)
@@ -1162,6 +1159,9 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       :ok
     end
   end
+
+  defp draft_id?(id) when is_binary(id), do: String.starts_with?(id, "new-")
+  defp draft_id?(_), do: false
 
   # Detects whether a persisted draft's attachment state has changed
   # against its persisted baseline — without this, "Save Changes" on a

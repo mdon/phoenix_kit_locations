@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.2.0 - 2026-05-29
+
+### Added
+- **Spaces** — nested floors and rooms under a Location (`PhoenixKitLocations.Spaces` + `Schemas.Space`, backed by core migration V122 `phoenix_kit_location_spaces`). Edited as staged in-memory drafts that commit on the global Location save; floors are top-level tabs, rooms nest under the active floor. Block-on-invalid validation gate with a kind-aware flash that names the offending draft ("Floor 2 needs a name" / "Room 1 in Floor 2 needs a name"). Floor delete cascades to its rooms; partial-save failures keep the failed drafts on the page. Context guards the same-Location parent invariant and indirect-cycle prevention (depth-bounded walk-up).
+- **Attachments** — scope-aware Files cards + featured-image picker per Location and per Space draft (`PhoenixKitLocations.Attachments`), routing drag-and-drop uploads to the right scope.
+- Per-draft independent language selector on floor and room editors.
+- `PhoenixKitLocations.Errors` atoms for Spaces: `:space_not_found`, `:parent_in_other_location`, `:parent_not_found`, `:cycle`, `:parent_floor_unsaved`.
+
+### Changed
+- **Dependency floor raised: `{:phoenix_kit, "~> 1.7.105"}` → `"~> 1.7.125"`.** 1.7.125 is the first core release shipping migration V122; the Spaces feature would have no table on older cores.
+- Locations/Types in-page tab nav removed in favor of the PhoenixKit admin dashboard's sibling subtabs; replaced with `<.admin_page_header>`. Name cells in both tables now navigate to the edit page on click.
+- Full-width admin layout across all three LiveViews (forms capped at an inner `max-w`); dropped the deprecated `back=` attr from headers.
+
+### Fixed
+- Saving a Location with no staged spaces no longer crashes the form — `persist_space_drafts/3` had a dead `[] -> nil` clause shadowing the `{nil, MapSet.new()}` clause, so the empty-drafts path raised a `MatchError` on the (common) spaceless save.
+- `Spaces.reorder_siblings/4` no longer silently no-ops for root-level floors — a pinned `parent_uuid == ^nil` compiled to SQL `= NULL` (zero rows); the `nil`-parent case now uses `is_nil/1`.
+- `Spaces.update_space/3`'s cycle check now reads `parent_uuid` under both string and atom keys (via a shared `fetch_attr/2`), matching the parent-location check — an atom-keyed `attrs` map no longer bypasses the guard.
+- `check_parent_under_location/2` returns the accurate `:parent_not_found` when a parent UUID doesn't exist, instead of conflating it with `:parent_in_other_location`.
+
+### Quality
+- `mix precommit` clean: `compile --force --warnings-as-errors`, `deps.unlock --check-unused`, `format --check-formatted`, `credo --strict`, `dialyzer` all pass. Restored `handle_event/3` and `persist_room/5` clause grouping that the Spaces work had split (which `--warnings-as-errors` rejected).
+- Pure-helper test suites for `Space` schema, `Attachments` helpers, and the new `Errors` atoms.
+
 ## 0.1.3 - 2026-05-25
 
 ### Fixed

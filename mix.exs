@@ -1,7 +1,7 @@
 defmodule PhoenixKitLocations.MixProject do
   use Mix.Project
 
-  @version "0.1.3"
+  @version "0.2.0"
   @source_url "https://github.com/BeamLabEU/phoenix_kit_locations"
 
   def project do
@@ -56,10 +56,12 @@ defmodule PhoenixKitLocations.MixProject do
 
   defp deps do
     [
-      # 1.7.105 introduced `PhoenixKit.Migration.ensure_current/2` —
-      # consumed by `test/test_helper.exs`. Older cores miss the
-      # function and `mix test` would crash at boot.
-      {:phoenix_kit, "~> 1.7.105"},
+      # 1.7.125 first shipped migration V122 (`phoenix_kit_location_spaces`),
+      # the table the Spaces feature reads and writes. Older cores miss the
+      # table entirely; 1.7.105 also introduced
+      # `PhoenixKit.Migration.ensure_current/2` (consumed by
+      # `test/test_helper.exs`), so 1.7.125 covers both floors.
+      {:phoenix_kit, "~> 1.7.125"},
       {:phoenix_live_view, "~> 1.1"},
       {:ex_doc, "~> 0.39", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
