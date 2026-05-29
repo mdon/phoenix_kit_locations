@@ -12,6 +12,8 @@ defmodule PhoenixKitLocations.Web.LocationsLive do
 
   require Logger
 
+  import PhoenixKitWeb.Components.Core.AdminPageHeader
+  import PhoenixKitWeb.Components.Core.Icon
   import PhoenixKitWeb.Components.Core.Modal, only: [confirm_modal: 1]
   import PhoenixKitWeb.Components.Core.TableDefault
   import PhoenixKitWeb.Components.Core.TableRowMenu
@@ -188,33 +190,36 @@ defmodule PhoenixKitLocations.Web.LocationsLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="flex flex-col mx-auto max-w-5xl px-4 py-6 gap-6">
-      <%!-- Tab navigation --%>
-      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div role="tablist" class="tabs tabs-bordered">
+    <div class="flex flex-col w-full px-4 py-6 gap-6">
+      <%!-- Locations / Types switching lives in the PhoenixKit admin
+           dashboard's subtab nav (`:admin_locations_list` and
+           `:admin_locations_types`); rendering the same switcher in
+           the page would duplicate it. --%>
+      <.admin_page_header
+        title={if @active_tab == :types, do: gettext("Location Types"), else: gettext("Locations")}
+        subtitle={
+          if @active_tab == :types,
+            do: gettext("Categories used to tag locations."),
+            else: gettext("Physical and virtual locations.")
+        }
+      >
+        <:actions>
           <.link
-            patch={Paths.index()}
-            class={["tab", @active_tab == :index && "tab-active"]}
+            :if={@active_tab == :index}
+            navigate={Paths.location_new()}
+            class="btn btn-primary btn-sm"
           >
-            {gettext("Locations")}
+            <.icon name="hero-plus" class="w-4 h-4" /> {gettext("New Location")}
           </.link>
           <.link
-            patch={Paths.types()}
-            class={["tab", @active_tab == :types && "tab-active"]}
+            :if={@active_tab == :types}
+            navigate={Paths.type_new()}
+            class="btn btn-primary btn-sm"
           >
-            {gettext("Types")}
+            <.icon name="hero-plus" class="w-4 h-4" /> {gettext("New Type")}
           </.link>
-        </div>
-
-        <div class="self-end sm:self-auto">
-          <.link :if={@active_tab == :index} navigate={Paths.location_new()} class="btn btn-primary btn-sm">
-            {gettext("New Location")}
-          </.link>
-          <.link :if={@active_tab == :types} navigate={Paths.type_new()} class="btn btn-primary btn-sm">
-            {gettext("New Type")}
-          </.link>
-        </div>
-      </div>
+        </:actions>
+      </.admin_page_header>
 
       <%!-- Locations tab content --%>
       <div :if={@active_tab == :index}>
@@ -281,7 +286,11 @@ defmodule PhoenixKitLocations.Web.LocationsLive do
         </.table_default_header>
         <.table_default_body>
           <.table_default_row :for={location <- @locations}>
-            <.table_default_cell class="font-medium">{location.name}</.table_default_cell>
+            <.table_default_cell>
+              <.link navigate={Paths.location_edit(location.uuid)} class="link link-hover font-medium">
+                {location.name}
+              </.link>
+            </.table_default_cell>
             <.table_default_cell class="text-sm text-base-content/60">{location.address_line_1 || "—"}</.table_default_cell>
             <.table_default_cell class="text-sm text-base-content/60">{location.city || "—"}</.table_default_cell>
             <.table_default_cell>
@@ -343,7 +352,11 @@ defmodule PhoenixKitLocations.Web.LocationsLive do
         </.table_default_header>
         <.table_default_body>
           <.table_default_row :for={t <- @location_types}>
-            <.table_default_cell class="font-medium">{t.name}</.table_default_cell>
+            <.table_default_cell>
+              <.link navigate={Paths.type_edit(t.uuid)} class="link link-hover font-medium">
+                {t.name}
+              </.link>
+            </.table_default_cell>
             <.table_default_cell class="text-sm text-base-content/60">{t.description || "—"}</.table_default_cell>
             <.table_default_cell>
               <span class={["badge badge-sm", if(t.status == "active", do: "badge-success", else: "badge-ghost")]}>

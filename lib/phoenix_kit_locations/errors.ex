@@ -37,6 +37,17 @@ defmodule PhoenixKitLocations.Errors do
   def message(:type_assignment_failed),
     do: gettext("Saved but failed to update type assignments.")
 
+  def message(:space_not_found), do: gettext("Space not found.")
+
+  def message(:parent_in_other_location),
+    do: gettext("The chosen parent space belongs to a different location.")
+
+  def message(:cycle),
+    do: gettext("Cannot make a space its own ancestor.")
+
+  def message(:parent_floor_unsaved),
+    do: gettext("its parent floor was not saved (it might need a name)")
+
   def message(:unexpected), do: gettext("An unexpected error occurred.")
 
   def message(reason) when is_binary(reason), do: reason

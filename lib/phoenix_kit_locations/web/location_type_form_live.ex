@@ -145,13 +145,13 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
       )
 
     ~H"""
-    <div class="flex flex-col mx-auto max-w-2xl px-4 py-8 gap-6">
+    <div class="flex flex-col w-full px-4 py-8 gap-6">
       <.admin_page_header
-        back={Paths.types()}
         title={@page_title}
         subtitle={if @action == :new, do: gettext("Create a new location type for categorizing locations."), else: gettext("Update location type details.")}
       />
 
+      <div class="max-w-3xl mx-auto w-full">
       <.form for={@form} action="#" phx-change="validate" phx-submit="save">
         <div class="card bg-base-100 shadow-lg">
           <.multilang_tabs
@@ -240,6 +240,7 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
           </div>
         </div>
       </.form>
+      </div>
     </div>
     """
   end

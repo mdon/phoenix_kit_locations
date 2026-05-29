@@ -274,9 +274,9 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
       |> render_change()
     end
 
-    defp blur_address_line_1(view) do
+    defp blur_postal_code(view) do
       view
-      |> element(~s|input[name="location[address_line_1]"]|)
+      |> element(~s|input[name="location[postal_code]"]|)
       |> render_blur()
     end
 
@@ -292,7 +292,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
       {:ok, view, _html} = live(conn, "/en/admin/locations/new")
 
       seed_address(view, "123 Main St", "Springfield", "62701")
-      rendered = blur_address_line_1(view)
+      rendered = blur_postal_code(view)
 
       assert rendered =~ "Similar address found at: Existing HQ"
     end
@@ -301,7 +301,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
       {:ok, view, _html} = live(conn, "/en/admin/locations/new")
 
       seed_address(view, "999 Nowhere Rd", "Anywhere", "00000")
-      rendered = blur_address_line_1(view)
+      rendered = blur_postal_code(view)
 
       refute rendered =~ "Similar address found at"
     end
@@ -318,7 +318,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
       {:ok, view, _html} = live(conn, "/en/admin/locations/new")
 
       seed_address(view, "12 Oak St", "C", "99")
-      warned = blur_address_line_1(view)
+      warned = blur_postal_code(view)
 
       assert warned =~ "Similar address found at"
 
@@ -343,7 +343,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
 
       # On :edit the loaded record already populates the changeset's data —
       # no need to re-seed via render_change before blur.
-      rendered = blur_address_line_1(view)
+      rendered = blur_postal_code(view)
 
       refute rendered =~ "Similar address found at"
     end
@@ -368,9 +368,9 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
       )
       |> render_change()
 
-      rendered = blur_address_line_1(view)
+      rendered = blur_postal_code(view)
 
-      assert Process.alive?(view.pid), "blur on address_line_1 must not crash the LV"
+      assert Process.alive?(view.pid), "blur on postal_code must not crash the LV"
       # Typed fields survive the blur (re-render uses up-to-date changeset).
       assert rendered =~ ~s(value="RegressionHQ")
       assert rendered =~ ~s(value="1 Reproduce Ave")

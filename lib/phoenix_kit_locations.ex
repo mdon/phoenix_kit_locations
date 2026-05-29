@@ -109,7 +109,11 @@ defmodule PhoenixKitLocations do
         priority: 671,
         level: :admin,
         permission: module_key(),
-        match: :exact,
+        # Match the list page + its own sub-pages (new / edit) but NOT the
+        # sibling `locations/types*` subtree. A bare `:prefix` would
+        # swallow types; `:exact` misses /new and /:uuid/edit, leaving the
+        # parent tab as the only visible "active" item on those pages.
+        match: {:regex, ~r{(?:^|/)locations(?:/new|/[^/]+/edit)?$}},
         parent: :admin_locations,
         live_view: {PhoenixKitLocations.Web.LocationsLive, :index}
       },
