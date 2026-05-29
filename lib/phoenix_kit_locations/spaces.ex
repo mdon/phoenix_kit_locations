@@ -123,7 +123,8 @@ defmodule PhoenixKitLocations.Spaces do
     attrs = Map.put_new(attrs, "location_uuid", space.location_uuid)
 
     with :ok <- validate_parent_location(attrs),
-         :ok <- validate_no_cycle(space.uuid, attrs["parent_uuid"], space.location_uuid) do
+         :ok <-
+           validate_no_cycle(space.uuid, fetch_attr(attrs, :parent_uuid), space.location_uuid) do
       space
       |> Space.changeset(attrs)
       |> repo().update()
@@ -203,10 +204,17 @@ defmodule PhoenixKitLocations.Spaces do
   # ═══════════════════════════════════════════════════════════════════
 
   defp validate_parent_location(attrs) do
-    location_uuid = Map.get(attrs, "location_uuid") || Map.get(attrs, :location_uuid)
-    parent_uuid = Map.get(attrs, "parent_uuid") || Map.get(attrs, :parent_uuid)
+    check_parent_under_location(
+      fetch_attr(attrs, :location_uuid),
+      fetch_attr(attrs, :parent_uuid)
+    )
+  end
 
-    check_parent_under_location(location_uuid, parent_uuid)
+  # `attrs` may arrive string-keyed (form params) or atom-keyed (internal
+  # callers); read either so parent/cycle checks never silently skip on a
+  # key-shape mismatch.
+  defp fetch_attr(attrs, key) when is_atom(key) do
+    Map.get(attrs, Atom.to_string(key)) || Map.get(attrs, key)
   end
 
   defp check_parent_under_location(_location_uuid, nil), do: :ok

@@ -2,9 +2,10 @@
 
 **Reviewer:** Claude | **Date:** 2026-05-29 | **Verdict:** Approve **with one
 required fix that we applied ourselves** (post-merge) — a save-path crash for
-the common "location with no spaces" case. Three cleanups also applied (two
-`textarea` attr warnings + the latent `reorder_siblings` root-parent no-op);
-two minor items left as recommendations.
+the common "location with no spaces" case. Four cleanups also applied (two
+`textarea` attr warnings, the latent `reorder_siblings` root-parent no-op, and
+the `update_space` cycle-check key handling); one minor naming item left as a
+recommendation.
 
 ## Scope of what we reviewed
 
@@ -128,15 +129,19 @@ clause that uses `is_nil(s.parent_uuid)` and a non-nil clause that keeps the
 pinned equality — clause-per-case, matching the module's existing
 `check_parent_under_location/2` / `classify_for_floor_delete/3` style.
 
+### `NITPICK` — inconsistent key access in `update_space/3`'s cycle check *(fixed)*
+
+`validate_parent_location/1` read `parent_uuid` under **both** string and atom
+keys, but the sibling `validate_no_cycle` call passed `attrs["parent_uuid"]`
+(string only) — so an atom-keyed `attrs` would silently skip the cycle guard.
+Every current caller (the form pipeline) uses string keys, so it was correct in
+practice, but the two checks should agree.
+
+**Fix:** extracted a `fetch_attr/2` helper that reads either key shape and
+routed both `validate_parent_location/1` and the `validate_no_cycle` call
+through it, so the parent-location and cycle guards now handle keys identically.
+
 ## Recommendations we did *not* apply (flagged for follow-up)
-
-### `NITPICK` — inconsistent key access in `update_space/3`'s cycle check
-
-`validate_parent_location/1` reads `parent_uuid` under **both** string and atom
-keys, but the sibling `validate_no_cycle` call passes `attrs["parent_uuid"]`
-(string only). An atom-keyed `attrs` would silently skip the cycle guard. Every
-current caller (the form pipeline) uses string keys, so it's correct in
-practice — but the two checks should agree on key handling.
 
 ### `NITPICK` — `:parent_in_other_location` returned for a non-existent parent
 
