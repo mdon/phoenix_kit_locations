@@ -929,8 +929,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   #
   # Best-effort: per-draft failures log + surface as a warning flash on
   # the redirect; we don't roll back the Location save.
-  defp persist_space_drafts([], _location_uuid, _socket), do: nil
-
   defp persist_space_drafts([], _location_uuid, _socket), do: {nil, MapSet.new()}
 
   defp persist_space_drafts(drafts, location_uuid, socket) do
@@ -1794,7 +1792,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         <div class="mt-2">
           <.textarea
             field={@floor_form[:notes]}
-            label={nil}
             rows="2"
             placeholder={gettext("Admin-only notes...")}
             class="min-h-[4rem]"
@@ -1969,7 +1966,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         <div class="mt-2">
           <.textarea
             field={@room_form[:notes]}
-            label={nil}
             rows="2"
             placeholder={gettext("Admin-only notes...")}
             class="min-h-[4rem]"
