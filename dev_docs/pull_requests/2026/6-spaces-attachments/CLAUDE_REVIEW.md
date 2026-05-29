@@ -2,10 +2,10 @@
 
 **Reviewer:** Claude | **Date:** 2026-05-29 | **Verdict:** Approve **with one
 required fix that we applied ourselves** (post-merge) — a save-path crash for
-the common "location with no spaces" case. Four cleanups also applied (two
-`textarea` attr warnings, the latent `reorder_siblings` root-parent no-op, and
-the `update_space` cycle-check key handling); one minor naming item left as a
-recommendation.
+the common "location with no spaces" case. Five cleanups also applied (two
+`textarea` attr warnings, the latent `reorder_siblings` root-parent no-op, the
+`update_space` cycle-check key handling, and the `:parent_not_found` error
+distinction). No open recommendations remain.
 
 ## Scope of what we reviewed
 
@@ -141,14 +141,21 @@ practice, but the two checks should agree.
 routed both `validate_parent_location/1` and the `validate_no_cycle` call
 through it, so the parent-location and cycle guards now handle keys identically.
 
+### `NITPICK` — `:parent_in_other_location` returned for a non-existent parent *(fixed)*
+
+`check_parent_under_location/2` mapped a `get_space(parent_uuid) == nil` (parent
+UUID doesn't exist at all) to `:parent_in_other_location` — misleading, since
+"in another location" and "doesn't exist" are different failures.
+
+**Fix:** the `nil` branch now returns a distinct `:parent_not_found`; the
+cross-location branch keeps `:parent_in_other_location`. Added the
+`:parent_not_found` message to `Errors` (`"The chosen parent space no longer
+exists."`), widened the `create_space/2` + `update_space/3` `@spec` error
+unions, and added the matching per-atom test to `errors_test.exs`.
+
 ## Recommendations we did *not* apply (flagged for follow-up)
 
-### `NITPICK` — `:parent_in_other_location` returned for a non-existent parent
-
-`check_parent_under_location/2` maps a `get_space(parent_uuid) == nil` (parent
-UUID doesn't exist at all) to `:parent_in_other_location`. Slightly misleading;
-a separate `:parent_not_found` atom would read truer. Cosmetic — the form never
-lets a user pick a non-existent parent.
+_None — all review findings have been addressed._
 
 ### Process note — add `mix compile --warnings-as-errors` to the quality gate
 

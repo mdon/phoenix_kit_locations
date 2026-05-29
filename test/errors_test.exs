@@ -34,6 +34,11 @@ defmodule PhoenixKitLocations.ErrorsTest do
                "The chosen parent space belongs to a different location."
     end
 
+    test ":parent_not_found" do
+      assert Errors.message(:parent_not_found) ==
+               "The chosen parent space no longer exists."
+    end
+
     test ":cycle" do
       assert Errors.message(:cycle) == "Cannot make a space its own ancestor."
     end

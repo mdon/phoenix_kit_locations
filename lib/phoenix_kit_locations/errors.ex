@@ -42,6 +42,9 @@ defmodule PhoenixKitLocations.Errors do
   def message(:parent_in_other_location),
     do: gettext("The chosen parent space belongs to a different location.")
 
+  def message(:parent_not_found),
+    do: gettext("The chosen parent space no longer exists.")
+
   def message(:cycle),
     do: gettext("Cannot make a space its own ancestor.")
 

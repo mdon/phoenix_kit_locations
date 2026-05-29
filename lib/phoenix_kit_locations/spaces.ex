@@ -97,7 +97,11 @@ defmodule PhoenixKitLocations.Spaces do
   """
   @spec create_space(map(), opts) ::
           {:ok, Space.t()}
-          | {:error, Ecto.Changeset.t() | :parent_in_other_location | :location_not_found}
+          | {:error,
+             Ecto.Changeset.t()
+             | :parent_in_other_location
+             | :parent_not_found
+             | :location_not_found}
   def create_space(attrs, opts \\ []) do
     with :ok <- validate_parent_location(attrs) do
       %Space{}
@@ -117,6 +121,7 @@ defmodule PhoenixKitLocations.Spaces do
           | {:error,
              Ecto.Changeset.t()
              | :parent_in_other_location
+             | :parent_not_found
              | :location_not_found
              | :cycle}
   def update_space(%Space{} = space, attrs, opts \\ []) do
@@ -223,7 +228,7 @@ defmodule PhoenixKitLocations.Spaces do
 
   defp check_parent_under_location(location_uuid, parent_uuid) do
     case get_space(parent_uuid) do
-      nil -> {:error, :parent_in_other_location}
+      nil -> {:error, :parent_not_found}
       %Space{location_uuid: ^location_uuid} -> :ok
       %Space{} -> {:error, :parent_in_other_location}
     end
