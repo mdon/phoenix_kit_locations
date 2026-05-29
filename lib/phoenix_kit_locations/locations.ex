@@ -594,8 +594,8 @@ defmodule PhoenixKitLocations.Locations do
   end
 
   @doc """
-  Logs a module enable/disable toggle. Called by `PhoenixKitLocations.enable_system/0`
-  and `disable_system/0`.
+  Logs a module enable/disable toggle. Called from the `enable_system` /
+  `disable_system` module lifecycle functions.
   """
   @spec log_module_toggle(:enabled | :disabled, opts) :: :ok
   def log_module_toggle(state, opts \\ []) when state in [:enabled, :disabled] do
