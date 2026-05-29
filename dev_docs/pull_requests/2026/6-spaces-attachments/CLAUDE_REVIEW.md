@@ -2,8 +2,9 @@
 
 **Reviewer:** Claude | **Date:** 2026-05-29 | **Verdict:** Approve **with one
 required fix that we applied ourselves** (post-merge) — a save-path crash for
-the common "location with no spaces" case. Two smaller cleanups also applied;
-three latent items left as recommendations.
+the common "location with no spaces" case. Three cleanups also applied (two
+`textarea` attr warnings + the latent `reorder_siblings` root-parent no-op);
+two minor items left as recommendations.
 
 ## Scope of what we reviewed
 
@@ -105,9 +106,9 @@ Net diff: **4 deletions, 1 file** (`location_form_live.ex`).
 
 ---
 
-## Recommendations we did *not* apply (flagged for follow-up)
+### `BUG - LOW` (latent, currently unused) — `Spaces.reorder_siblings/4` no-oped for root-level floors *(fixed)*
 
-### `BUG - LOW` (latent, currently unused) — `Spaces.reorder_siblings/4` no-ops for root-level floors
+The original query scoped the sibling group with a pinned `== ^parent_uuid`:
 
 ```elixir
 from(s in Space,
@@ -117,12 +118,17 @@ from(s in Space,
 
 When `parent_uuid` is `nil` (every floor — floors are always root), a pinned
 `== ^nil` compiles to SQL `parent_uuid = NULL`, which is never true, so
-`update_all` matches **zero rows** and the reorder silently does nothing.
-Rooms (non-nil parent) reorder fine. The function has **no callers yet**
-(reordering isn't wired into the staged-draft UI), so this is latent — left
-unfixed to avoid touching unused code, but it'll bite whoever wires up floor
-drag-reordering. Fix when wired: branch on `is_nil(parent_uuid)` →
-`where: is_nil(s.parent_uuid)`.
+`update_all` matched **zero rows** and the reorder silently did nothing.
+Rooms (non-nil parent) reordered fine. The function has **no callers yet**
+(reordering isn't wired into the staged-draft UI), so this was latent — but it
+would bite whoever wires up floor drag-reordering.
+
+**Fix:** extracted a `sibling_position_query/3` helper with a `nil`-parent
+clause that uses `is_nil(s.parent_uuid)` and a non-nil clause that keeps the
+pinned equality — clause-per-case, matching the module's existing
+`check_parent_under_location/2` / `classify_for_floor_delete/3` style.
+
+## Recommendations we did *not* apply (flagged for follow-up)
 
 ### `NITPICK` — inconsistent key access in `update_space/3`'s cycle check
 

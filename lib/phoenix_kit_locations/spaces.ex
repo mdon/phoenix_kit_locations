@@ -158,11 +158,8 @@ defmodule PhoenixKitLocations.Spaces do
       ordered_uuids
       |> Enum.with_index()
       |> Enum.each(fn {uuid, position} ->
-        from(s in Space,
-          where:
-            s.uuid == ^uuid and s.location_uuid == ^location_uuid and
-              s.parent_uuid == ^parent_uuid
-        )
+        uuid
+        |> sibling_position_query(location_uuid, parent_uuid)
         |> repo().update_all(set: [position: position])
       end)
     end)
@@ -181,6 +178,24 @@ defmodule PhoenixKitLocations.Spaces do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # Scopes a single space to its (location, parent) sibling group. Root
+  # siblings carry `parent_uuid == nil`, which must be matched with
+  # `is_nil/1` — a pinned `== ^nil` compiles to SQL `= NULL` and never
+  # matches, so floor reordering would silently update zero rows.
+  defp sibling_position_query(uuid, location_uuid, nil) do
+    from(s in Space,
+      where: s.uuid == ^uuid and s.location_uuid == ^location_uuid and is_nil(s.parent_uuid)
+    )
+  end
+
+  defp sibling_position_query(uuid, location_uuid, parent_uuid) do
+    from(s in Space,
+      where:
+        s.uuid == ^uuid and s.location_uuid == ^location_uuid and
+          s.parent_uuid == ^parent_uuid
+    )
   end
 
   # ═══════════════════════════════════════════════════════════════════
