@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 - 2026-06-08
+
+### Added
+- **Env-gated local dependency override.** `phoenix_kit` (and future sibling `phoenix_kit_*` deps) now resolve through a `pk_dep/3` helper in `mix.exs`: export `<APP>_PATH` (e.g. `PHOENIX_KIT_PATH=../phoenix_kit`) to build/test against a local checkout via `path:` + `override: true`; unset or blank falls back to the published Hex pin, so `mix hex.publish` and CI resolve exactly as before. Documented in `AGENTS.md`. A blank/whitespace value is treated as unset (`System.get_env/1` returns `""`, not `nil`), so `PHOENIX_KIT_PATH= mix test` no longer produces a broken `path: ""` dep.
+
+### Changed
+- Dependency lockfile refreshed (incl. `phoenix_kit` 1.7.125 → 1.7.133); the `~> 1.7.125` requirement is unchanged and the published runtime/API is identical to 0.2.0.
+- Minor docstring cleanup in `PhoenixKitLocations.Locations.log_module_toggle/2`.
+
 ## 0.2.0 - 2026-05-29
 
 ### Added
