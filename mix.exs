@@ -56,14 +56,14 @@ defmodule PhoenixKitLocations.MixProject do
 
   # phoenix_kit deps resolve from Hex by default. For cross-repo work against a
   # local checkout, export <APP>_PATH — e.g. PHOENIX_KIT_PATH=../phoenix_kit or
-  # PHOENIX_KIT_AI_PATH=../phoenix_kit_ai. Unset => the published pin, so
-  # mix hex.publish is unaffected.
+  # PHOENIX_KIT_AI_PATH=../phoenix_kit_ai. Unset or blank => the published pin,
+  # so mix hex.publish is unaffected.
   defp pk_dep(app, requirement, opts \\ []) do
     env_var = String.upcase(Atom.to_string(app)) <> "_PATH"
 
-    case System.get_env(env_var) do
-      nil when opts == [] -> {app, requirement}
-      nil -> {app, requirement, opts}
+    case System.get_env(env_var, "") |> String.trim() do
+      "" when opts == [] -> {app, requirement}
+      "" -> {app, requirement, opts}
       path -> {app, [path: path, override: true] ++ opts}
     end
   end
