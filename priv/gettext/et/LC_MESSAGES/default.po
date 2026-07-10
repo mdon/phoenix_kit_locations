@@ -1,0 +1,42 @@
+## "msgid"s in this file come from POT (.pot) files.
+###
+### Do not add, change, or remove "msgid"s manually here as
+### they're tied to the ones in the corresponding POT file
+### (with the same domain).
+###
+### Use "mix gettext.extract --merge" or "mix gettext.merge"
+### to merge POT files into PO files.
+msgid ""
+msgstr ""
+"Language: et\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#: lib/phoenix_kit_locations/schemas/space.ex:135
+#, elixir-autogen, elixir-format
+msgid "Aisle"
+msgstr "Vahekäik"
+
+#: lib/phoenix_kit_locations/schemas/space.ex:131
+#, elixir-autogen, elixir-format
+msgid "Floor"
+msgstr "Korrus"
+
+#: lib/phoenix_kit_locations/schemas/space.ex:132
+#, elixir-autogen, elixir-format
+msgid "Room"
+msgstr "Ruum"
+
+#: lib/phoenix_kit_locations/schemas/space.ex:134
+#, elixir-autogen, elixir-format
+msgid "Section"
+msgstr "Sektsioon"
+
+#: lib/phoenix_kit_locations/schemas/space.ex:136
+#, elixir-autogen, elixir-format
+msgid "Shelf"
+msgstr "Riiul"
+
+#: lib/phoenix_kit_locations/schemas/space.ex:133
+#, elixir-autogen, elixir-format
+msgid "Zone"
+msgstr "Tsoon"
