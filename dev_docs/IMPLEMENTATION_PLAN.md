@@ -1,12 +1,25 @@
 <!-- ПРИМЕЧАНИЕ ОРКЕСТРАТОРА 2026-07-10: решения по открытым вопросам планировщика -->
 > **Решения по открытым вопросам (2026-07-10):**
-> 1. **v0.5 (PlacePicker) делаем сейчас** — первый потребитель определён: волна 1 склада (мульти-склад) стартует сразу после locations.
+> 1. **v0.5 (PlacePicker) делаем сейчас** — потребитель: опциональная финальная задача T23 волны 1 склада (замена `<select>` на PlacePicker); волна 1 склада на пикер НЕ блокируется (стартует с `<select>`).
 > 2. **Локали en/et/ru** — как у соседних модулей (manufacturing/warehouse), весь набор core не требуется.
 > 3. **Мультиязычность name/description Space СОХРАНЯЕМ** (MultilangForm, как в старом floor/room-флоу) — новая вкладка не должна регрессировать существующую функциональность. Задачу 13 расширить соответственно.
 > 4. **Immediate commit = submit-сохранение формы** (не автосейв на каждый ввод); rename/reorder — мгновенные. Подтверждено.
 > 5. **Hard delete с CASCADE — подтверждён**, обязательно модальное подтверждение с количеством дочерних узлов.
 >
 > **Правка кросс-чека:** публичный API пути — `Spaces.full_path/2` (НЕ `Paths.full_path` — Paths остаётся модулем URL-хелперов); DEVELOPMENT_PLAN.md §5 обновлён.
+
+> **ОБЯЗАТЕЛЬНЫЕ ПРАВКИ ПО ИТОГАМ 4-СТОРОННЕГО РЕВЬЮ (2026-07-10, GLM/Sonnet/Kimi/Vibe; все пункты проверены по коду):**
+> 1. **[blocker] Задачи 8 и 19 — форма узла дерева.** `Spaces.list_tree/1` возвращает узлы-`%Space{}` с ключом `:children` НА самом узле (`build_tree` = `Map.put(space, :children, ...)`, spaces.ex:73-79). Обёртки `:space` нет: писать `node.kind`/`node.name`/`node.uuid`/`node.children`, НЕ `node.space.kind`.
+> 2. **[blocker] Задача 13 — мультиязычность безусловно.** Убрать вариант «без мультиязычности в v0.4 MVP»: `MultilangForm.translatable_field` для name/description обязателен (решение №3 шапки). Логику слияния locale-data (аналог `merge_translatable_params`/`space_lang_data` из удаляемого staged-флоу) перенести в `LocationStructureLive` ДО удаления в задаче 14.
+> 3. **[blocker] Задачи 8↔12 — имя события.** Унифицировать: `on_add_root` default и обработчик — одно имя (`"open_add_root"`), сейчас в задаче 8 указано `"add_root_space"`, в задаче 12 — `"open_add_root"` (кнопка была бы no-op).
+> 4. **[major] Задачи 12–13 — activity log.** Все мутирующие вызовы контекста передают опции актёра: `Spaces.create_space(attrs, actor_opts(socket))`, `update_space(space, params, actor_opts(socket))`, `delete_space(space, actor_opts(socket))` — иначе тихо теряется журналирование (spaces.ex форвардит `:actor_uuid`).
+> 5. **[minor] Задача 13 — арности Attachments.** `Attachments.init(socket)` (init/1, не init/0); `inject_attachment_data/3`.
+> 6. **[minor] Задачи 19–20 — PlacePicker.** Добавить `handle_event("toggle_space_node", ...)` в PlacePicker (дерево иначе не разворачивается); harness-роут размещать внутри существующего scope `/en/admin/locations` test_router и путь в тесте соответственно.
+> 7. **[minor] Задача 14.** Аннотация «~строки 2238-2337» пересекается с функциями из списка «Оставить» (`section_heading` 2261, `actor_opts` 2270, `feature_label` 2280) — удалять СТРОГО по именам из списка удаления. Также удалить ставшие неиспользуемыми `alias URLSigner` (после задачи 5) и `import NavTabs` — иначе `--warnings-as-errors` не пройдёт.
+> 8. **[minor] Задача 1.** В `mix.exs` `package/0.files` нет `priv` — новые .po не попадут в Hex-артефакт; добавить `"priv"` (сборке path-dep не мешает, важно при публикации).
+> 9. **[minor] Задача 5.** `files_card_body/1` фактически начинается на :2028 (не :2015 — это attr-декларации); ориентироваться по имени функции.
+> 10. **Согласование с планом склада:** потребитель PlacePicker в волне 1 — финальная опциональная задача склада T23 («заменить `<select>` на PlacePicker после locations v0.5»); формулировка решения №1 в шапке уточнена именно так.
+
 
 # План: иерархия площадок в phoenix_kit_locations (v0.3 → v0.5)
 
