@@ -8,22 +8,7 @@
 >
 > **Правка кросс-чека:** публичный API пути — `Spaces.full_path/2` (НЕ `Paths.full_path` — Paths остаётся модулем URL-хелперов); DEVELOPMENT_PLAN.md §5 обновлён.
 
-> **ОБЯЗАТЕЛЬНЫЕ ПРАВКИ ПО ИТОГАМ МНОГОРАУНДОВОГО РЕВЬЮ (2026-07-10, GLM High+Max/Sonnet/Kimi/Vibe high+max/Opus-max; все пункты проверены по коду):**
-> 1. **[blocker] Задачи 8 и 19 — форма узла дерева.** `Spaces.list_tree/1` возвращает узлы-`%Space{}` с ключом `:children` НА самом узле (`build_tree` = `Map.put(space, :children, ...)`, spaces.ex:73-79). Обёртки `:space` нет: писать `node.kind`/`node.name`/`node.uuid`/`node.children`, НЕ `node.space.kind`.
-> 2. **[blocker] Задача 13 — мультиязычность безусловно.** Убрать вариант «без мультиязычности в v0.4 MVP»: `MultilangForm.translatable_field` для name/description обязателен (решение №3 шапки). Логику слияния locale-data (аналог `merge_translatable_params`/`space_lang_data` из удаляемого staged-флоу) перенести в `LocationStructureLive` ДО удаления в задаче 14.
-> 3. **[blocker] Задачи 8↔12 — имя события.** Унифицировать: `on_add_root` default и обработчик — одно имя (`"open_add_root"`), сейчас в задаче 8 указано `"add_root_space"`, в задаче 12 — `"open_add_root"` (кнопка была бы no-op).
-> 4. **[major] Задачи 12–13 — activity log.** Все мутирующие вызовы контекста передают опции актёра: `Spaces.create_space(attrs, actor_opts(socket))`, `update_space(space, params, actor_opts(socket))`, `delete_space(space, actor_opts(socket))` — иначе тихо теряется журналирование (spaces.ex форвардит `:actor_uuid`).
-> 5. **[minor] Задача 13 — арности Attachments.** `Attachments.init(socket)` (init/1, не init/0); `inject_attachment_data/3`.
-> 6. **[minor] Задачи 19–20 — PlacePicker.** Добавить `handle_event("toggle_space_node", ...)` в PlacePicker (дерево иначе не разворачивается); harness-роут размещать внутри существующего scope `/en/admin/locations` test_router и путь в тесте соответственно.
-> 7. **[minor] Задача 14.** Аннотация «~строки 2238-2337» пересекается с функциями из списка «Оставить» (`section_heading` 2261, `actor_opts` 2270, `feature_label` 2280) — удалять СТРОГО по именам из списка удаления. Также удалить ставшие неиспользуемыми `alias URLSigner` (после задачи 5) и `import NavTabs` — иначе `--warnings-as-errors` не пройдёт.
-> 8. **[minor] Задача 1.** В `mix.exs` `package/0.files` нет `priv` — новые .po не попадут в Hex-артефакт; добавить `"priv"` (сборке path-dep не мешает, важно при публикации).
-> 9. **[minor] Задача 5.** `files_card_body/1` фактически начинается на :2028 (не :2015 — это attr-декларации); ориентироваться по имени функции.
-> 10. **Согласование с планом склада:** потребитель PlacePicker в волне 1 — финальная опциональная задача склада T23 («заменить `<select>` на PlacePicker после locations v0.5»); формулировка решения №1 в шапке уточнена именно так.
-> 11. **[minor, Opus] Задачи 2–3 — gettext-извлечение.** Функциональная форма `Gettext.gettext(PhoenixKitLocations.Gettext, "Floor")` НЕ сканируется `mix gettext.extract` (извлекаются только макро-вызовы). Либо `kind_label/1` вынести в модуль с `use Gettext, backend: PhoenixKitLocations.Gettext` и макро-формой `gettext("Floor")`, либо завести msgid в .pot/.po вручную и убрать шаг extract.
-> 12. **[minor, Opus] Задача 7.** Утверждение «WarehouseHeader использует core PhoenixKitWeb.Gettext» неверно — там `use Gettext, backend: PhoenixKitWarehouse.Gettext` (warehouse_header.ex:12). Для LocationTabs использовать собственный backend модуля.
-> 13. **[major, GLM@Max] Задача 18 — чтение переводов.** Не писать свой `get_in(data, [locale, "name"])`-ридер: переиспользовать существующий multilang-хелпер чтения (директива SPEC_RESEARCH §4), паттерн fallback-цепочки — `ItemPicker.translated_name/2` (private в catalogue — копировать паттерн, не вызывать).
-> 14. **[major, GLM@Max] Задача 14 — слияние форм.** Сливать `location-form-top`/`location-form-bottom` и удалять `merge_running_changes/2` ТОЛЬКО после проверки, что нижняя форма содержит исключительно Spaces-разметку; если там есть не-Spaces поля — не сливать/переносить явно.
-> 15. **[minor, GLM@Max] Хук PkLocationsUploadScope.** Не дублировать raw `<script>` во второй LiveView — оформить как ColocatedHook (`:type={Phoenix.LiveView.ColocatedHook}`, имя с точки), по конвенции CLAUDE.md.
+> Ревью-правки (многораундовое ревью 2026-07-10: GLM High+Max / Sonnet / Kimi / Vibe / Opus-max) интегрированы в тексты задач.
 
 
 # План: иерархия площадок в phoenix_kit_locations (v0.3 → v0.5)
@@ -74,6 +59,7 @@
   ```
   (дословно мирроринг `PhoenixKitManufacturing.Gettext`.)
 - Создать пустые каталоги `priv/gettext/en/LC_MESSAGES/`, `priv/gettext/et/LC_MESSAGES/`, `priv/gettext/ru/LC_MESSAGES/` (локали — как в manufacturing/warehouse; шаблон и `.po` наполнятся в задаче 3).
+- В `mix.exs` → `defp package do ... files: ~w(lib .formatter.exs mix.exs README.md CHANGELOG.md LICENSE)` — список **не включает `priv`**, из-за чего новые `.po`/`.pot` не попадут в опубликованный Hex-артефакт. Добавить `"priv"` в этот список (`files: ~w(lib priv .formatter.exs mix.exs README.md CHANGELOG.md LICENSE)`); на компиляцию/тесты path-dep это не влияет, важно только для будущей публикации в Hex.
 
 **Важно:** это НЕ заменяет `PhoenixKitWeb.Gettext` в существующих файлах (`location_form_live.ex`, `locations_live.ex`, `location_type_form_live.ex`) — трогать их backend не нужно, риск потерять уже работающие (пусть и случайные) переводы. Новый backend используется **только** для нового кода этого рефакторинга: `kind_label/1`/`kind_icon/1` (задача 2), новые компоненты и `LocationStructureLive`/`PlacePicker` (v0.4/v0.5).
 
@@ -85,15 +71,16 @@
 
 - Заменить `@kinds ~w(floor room)` на `@kinds ~w(floor room zone section aisle shelf)` (список из §3 DEVELOPMENT_PLAN — без `hall/suite/corner`, они остаются зарезервированы в CHECK, но не используются на app-уровне).
 - Обновить `@moduledoc`/комментарий над `@kinds` (сейчас гласит "V1 of the Spaces UI only exposes two kinds") — привести в соответствие с новым списком.
+- Добавить `use Gettext, backend: PhoenixKitLocations.Gettext` в модуль (рядом с `use Ecto.Schema`/`import Ecto.Changeset`) — **обязательно макро-форма**, а не функциональный вызов `Gettext.gettext(Backend, "...")`: `mix gettext.extract` сканирует только макро-вызовы (`gettext/1,2,3`), функциональная форма им не видна и msgid не попадёт в `.pot` (см. задачу 3). Стиль `Gettext.gettext(Backend, "...")` из `attachments.ex` здесь не подходит именно по этой причине.
 - Добавить публичные функции рядом с `kinds/0`/`statuses/0` (единый источник истины label+icon — переиспользуются `SpaceTree`, детальной панелью `LocationStructureLive` и picker-режимом в v0.5):
   ```elixir
   @spec kind_label(String.t()) :: String.t()
-  def kind_label("floor"),   do: Gettext.gettext(PhoenixKitLocations.Gettext, "Floor")
-  def kind_label("room"),    do: Gettext.gettext(PhoenixKitLocations.Gettext, "Room")
-  def kind_label("zone"),    do: Gettext.gettext(PhoenixKitLocations.Gettext, "Zone")
-  def kind_label("section"), do: Gettext.gettext(PhoenixKitLocations.Gettext, "Section")
-  def kind_label("aisle"),   do: Gettext.gettext(PhoenixKitLocations.Gettext, "Aisle")
-  def kind_label("shelf"),   do: Gettext.gettext(PhoenixKitLocations.Gettext, "Shelf")
+  def kind_label("floor"),   do: gettext("Floor")
+  def kind_label("room"),    do: gettext("Room")
+  def kind_label("zone"),    do: gettext("Zone")
+  def kind_label("section"), do: gettext("Section")
+  def kind_label("aisle"),   do: gettext("Aisle")
+  def kind_label("shelf"),   do: gettext("Shelf")
   def kind_label(kind),      do: kind
 
   @spec kind_icon(String.t()) :: String.t()
@@ -105,7 +92,7 @@
   def kind_icon("shelf"),   do: "hero-archive-box"
   def kind_icon(_kind),     do: "hero-cube"
   ```
-  (Стиль явного вызова `Gettext.gettext(Backend, "...")` без `use Gettext` — уже используется в `attachments.ex` для контекстных, не-LiveView модулей; `kind_icon` — чисто косметика, если конкретное имя heroicon отсутствует в собранном наборе — заменить на любое существующее, не блокирует остальной план.)
+  (`gettext/1` здесь — макро из `use Gettext, backend: PhoenixKitLocations.Gettext` выше, а не вызов ядра; `kind_icon` — чисто косметика, если конкретное имя heroicon отсутствует в собранном наборе — заменить на любое существующее, не блокирует остальной план.)
 - Никаких изменений в `changeset/2` не нужно — `validate_inclusion(:kind, @kinds)` и `check_constraint` уже читают `@kinds` динамически.
 
 **Проверка:** `mix test test/phoenix_kit_locations/schemas/space_test.exs` — расширить существующий файл кейсами "accepts zone/section/aisle/shelf" (по образцу уже существующих "accepts floor"/"accepts room") + новый `describe "kind_label/1 and kind_icon/1"` с прямыми вызовами. `mix test`.
@@ -140,9 +127,9 @@ PhoenixKitLocations.Locations.create_location_type(%{name: "Office", description
 ## Задача 5. Вынести `files_card_body/1` в общий компонент
 
 **Файлы:**
-- Создать `/www/phoenix_kit_locations/lib/phoenix_kit_locations/web/components/files_card.ex` — модуль `PhoenixKitLocations.Web.Components.FilesCard`, публичная функция `files_card_body/1` (перенести 1:1 из `location_form_live.ex:2015-2228`, `use Phoenix.Component`, `use Gettext, backend: PhoenixKitWeb.Gettext` — backend НЕ менять, это существующие строки core, просто переехавшие; `import PhoenixKitWeb.Components.Core.Icon, only: [icon: 1]`; `alias PhoenixKit.Modules.Storage.URLSigner`; `alias PhoenixKitLocations.Attachments`).
-- В `location_form_live.ex`: удалить private `files_card_body/1` (строки 2015-2228) и его `attr` декларации, добавить `import PhoenixKitLocations.Web.Components.FilesCard, only: [files_card_body: 1]`. Три существующих call-сайта (`location_scope()`, `@floor.id`, `@room.id`) продолжают работать без изменений.
-- **Не переносить** JS hook `<script>` (`PkLocationsUploadScope`, строки 1297-1312 в `location_form_live.ex`) — он остаётся в каждом потребляющем LiveView как есть (консервативно, не рискуем менять рабочий upload-механизм побочным эффектом рефакторинга). `LocationStructureLive` получит свою копию этого же блока в задаче 13.
+- Создать `/www/phoenix_kit_locations/lib/phoenix_kit_locations/web/components/files_card.ex` — модуль `PhoenixKitLocations.Web.Components.FilesCard`, публичная функция `files_card_body/1` (перенести 1:1 из `location_form_live.ex` — `attr` декларации начинаются ~2021, сама функция `files_card_body/1` фактически начинается на строке **2028** (не 2015 — это уже attr-декларации), заканчивается ~2228; ориентироваться по имени функции/`attr`, а не по номерам строк; `use Phoenix.Component`, `use Gettext, backend: PhoenixKitWeb.Gettext` — backend НЕ менять, это существующие строки core, просто переехавшие; `import PhoenixKitWeb.Components.Core.Icon, only: [icon: 1]`; `alias PhoenixKit.Modules.Storage.URLSigner`; `alias PhoenixKitLocations.Attachments`).
+- В `location_form_live.ex`: удалить `attr` декларации (~2021-2026) и private `files_card_body/1` (начинается ~2028, заканчивается ~2228 — ориентироваться по имени функции), добавить `import PhoenixKitLocations.Web.Components.FilesCard, only: [files_card_body: 1]`. Удалить ставший неиспользуемым `alias PhoenixKit.Modules.Storage.URLSigner` в `location_form_live.ex` — все 5 обращений к `URLSigner.signed_url/2` живут внутри переносимого `files_card_body/1`, больше нигде в файле алиас не используется, иначе `mix compile --warnings-as-errors` (шаг "Проверка" этой же задачи) упадёт на unused-alias. Три существующих call-сайта (`location_scope()`, `@floor.id`, `@room.id`) продолжают работать без изменений.
+- JS hook `PkLocationsUploadScope` (сейчас raw `<script>` на строках 1297-1312 в `location_form_live.ex`, регистрирует хук глобально через `window.PhoenixKitHooks`, вне `files_card_body/1`) — при переносе конвертировать в **ColocatedHook** и разместить внутри `FilesCard`, рядом с `files_card_body/1` (конвенция CLAUDE.md: раздельные raw `<script>` запрещены, только `:type={Phoenix.LiveView.ColocatedHook}` с именем хука через точку — по образцу `ItemPicker` в catalogue): `<script :type={Phoenix.LiveView.ColocatedHook} name=".PkLocationsUploadScope">export default { mounted() { ... } }</script>`, тело `mounted()` — 1:1 перенос текущей логики (`dragenter` → `pushEvent("set_active_upload_scope", %{scope: ...})`). Обновить атрибут дропзоны внутри самой `files_card_body/1` (строка 2131) — `phx-hook="PkLocationsUploadScope"` → `phx-hook=".PkLocationsUploadScope"`. Удалить старый raw `<script>`-блок (1297-1312) и его doc-комментарий из `location_form_live.ex` целиком: колокированный хук компилируется в общий JS-манифест один раз при сборке ассетов и автоматически доступен любому LiveView, рендерящему `<.files_card_body>` — дублировать регистрацию в `LocationStructureLive` (задача 13) не требуется.
 
 **Проверка:** `mix compile --warnings-as-errors`; `mix test test/phoenix_kit_locations/web/location_form_live_test.exs` — Files-карточка локации рендерится и работает как раньше (все существующие assertions на "Attached Files"/featured image должны пройти без изменений).
 
@@ -165,7 +152,7 @@ def location_structure(uuid), do: Routes.path("#{@base}/#{uuid}/structure")
 ```elixir
 defmodule PhoenixKitLocations.Web.Components.LocationTabs do
   use Phoenix.Component
-  use Gettext, backend: PhoenixKitWeb.Gettext
+  use Gettext, backend: PhoenixKitLocations.Gettext
 
   alias PhoenixKitLocations.Paths
 
@@ -186,7 +173,7 @@ defmodule PhoenixKitLocations.Web.Components.LocationTabs do
   end
 end
 ```
-(backend — core `PhoenixKitWeb.Gettext`, как в `WarehouseHeader`, две строки достаточно короткие чтобы не заводить ради них отдельный каталог; если предпочтительнее консистентность — заменить на `PhoenixKitLocations.Gettext`, не блокирует остальное).
+(backend — собственный `PhoenixKitLocations.Gettext` из задачи 1, а НЕ core `PhoenixKitWeb.Gettext`: `WarehouseHeader` — прецедент для этого компонента — на самом деле использует `use Gettext, backend: PhoenixKitWarehouse.Gettext`, свой собственный backend модуля, а не core (`warehouse_header.ex:12`); для `LocationTabs` следовать тому же паттерну.)
 
 Только показывается когда локация уже существует (`@action == :edit`) — на `:new` вкладки Structure не может быть (нет `location_uuid`).
 
@@ -194,15 +181,17 @@ end
 
 ## Задача 8. `SpaceTree` компонент (рекурсивный узел дерева)
 
-**Файл:** создать `/www/phoenix_kit_locations/lib/phoenix_kit_locations/web/components/space_tree.ex` — модуль `PhoenixKitLocations.Web.Components.SpaceTree`, адаптация `PhoenixKitWeb.Components.FolderExplorer.folder_tree_node/1` под узлы `Spaces.list_tree/1` (map с ключом `:children`, не `Folder` struct).
+**Файл:** создать `/www/phoenix_kit_locations/lib/phoenix_kit_locations/web/components/space_tree.ex` — модуль `PhoenixKitLocations.Web.Components.SpaceTree`, адаптация `PhoenixKitWeb.Components.FolderExplorer.folder_tree_node/1` под узлы `Spaces.list_tree/1`.
+
+**Важно про форму узла:** `Spaces.list_tree/1` возвращает список `%Space{}` (не `Folder` struct и НЕ обёртку `%{space: ..., children: ...}`) — `build_tree/2` кладёт вложенный список детей прямо в поле `:children` того же struct (`Map.put(space, :children, ...)`, `spaces.ex:73-79`, `:children` — существующая `has_many` ассоциация схемы). Значит все поля узла читаются напрямую: `node.kind`, `node.uuid`, `node.name`, `node.status`, `node.children` — **не** `node.space.kind`/`node.space.uuid`.
 
 Публичные компоненты:
-- `space_tree/1` — обёртка: `<ul>` корневых узлов + кнопка "+ Add root space" (событие `on_add_root`, по умолчанию `"add_root_space"`).
+- `space_tree/1` — обёртка: `<ul>` корневых узлов + кнопка "+ Add root space" (событие `on_add_root`, по умолчанию `"open_add_root"` — то же имя, что обработчик в задаче 12).
 - `space_tree_node/1` — рекурсивный узел. Атрибуты (по образцу FolderExplorer, упрощённо — **без** desktop-only 240px сайдбара и without drag/drop, без connector-line CSS-хореографии; см. память про мобильный overflow — держим один full-width столбец, не копируем фиксированную ширину сайдбара):
-  - `node` (map с `:space` и `:children`), `expanded` (MapSet), `selected_uuid`, `renaming_uuid`, `renaming_text`, `depth`, `myself`.
+  - `node` (`%Space{}` с полем `:children`, содержащим вложенный список таких же узлов — см. выше), `expanded` (MapSet), `selected_uuid`, `renaming_uuid`, `renaming_text`, `depth`, `myself`.
   - `on_select` (default `"select_space"`), `on_toggle` (default `"toggle_space_node"`) — конфигурируемые имена событий, чтобы v0.5 PlacePicker мог переиспользовать тот же компонент в режиме "выбор" с другими событиями.
   - `show_actions` (boolean, default `true`) — когда `false` (picker-режим), скрывает pencil/add/reorder/delete кнопки, оставляет только клик-для-выбора + expand/collapse. Мирроринг `FolderExplorer`'s `show_rename`/`enable_drag` флагов.
-- Строка узла: иконка через `Space.kind_icon(node.space.kind)`, имя, бейдж `Space.kind_label(node.space.kind)`, статус (приглушённый текст/бейдж если `status == "inactive"`).
+- Строка узла: иконка через `Space.kind_icon(node.kind)`, имя `node.name`, бейдж `Space.kind_label(node.kind)`, статус (приглушённый текст/бейдж если `node.status == "inactive"`).
 - Когда `show_actions`: pencil-иконка запускает инлайн-переименование (текстовое поле вместо имени, submit на Enter/blur) — 1:1 адаптация FolderExplorer'овского `renaming_folder`/`renaming_text`/`is_renaming` паттерна, события `start_rename_space` / `rename_space_input` / `rename_space` / `cancel_rename_space`; кнопки ▲/▼ (`move_space_up`/`move_space_down`, скрыты у единственного/крайнего в списке сиблинга); кнопка "+" добавить ребёнка (`open_add_child`, передаёт `parent_uuid`); кнопка trash (`delete_space`, с `data-confirm`).
 - Реордер (▲/▼) и переименование — единственные события, которые сам компонент считает "immediate" в UI-смысле (шлёт событие сразу); создание/редактирование прочих полей/статус/файлы — через форму-панель в `LocationStructureLive` (см. задачу 12).
 
@@ -270,11 +259,13 @@ use Gettext, backend: PhoenixKitLocations.Gettext
 
 Добавить `handle_event` для событий из `space_tree_node/1`:
 
-- `"open_add_root"` / `"open_add_child"` (`%{"parent_uuid" => uuid}` или без параметра для root) — открывает мини-форму создания (`assign(:adding_parent_uuid, uuid_or_:root, :new_space_form, to_form(Spaces.change_space(%Space{})))`).
-- `"validate_new_space"` / `"create_space"` (`%{"space" => params}`) — `Spaces.create_space(Map.merge(params, %{"location_uuid" => location.uuid, "parent_uuid" => parent_uuid}))`; при успехе — перезагрузить `:tree` из `Spaces.list_tree/1`, `expanded` дополнить `parent_uuid` (авто-развернуть), закрыть мини-форму, `assign(:selected_uuid, new_space.uuid)`; при ошибке — оставить форму открытой с ошибками (обычный changeset-flow).
-- `"start_rename_space"` / `"rename_space_input"` / `"rename_space"` / `"cancel_rename_space"` — инлайн-переименование: на submit `Spaces.update_space(space, %{"name" => new_name})`, перезагрузить `:tree`.
-- `"move_space_up"` / `"move_space_down"` (`%{"uuid" => uuid}`) — найти сиблингов узла в `:tree` (тот же `parent_uuid`), поменять местами с соседом, вызвать `Spaces.reorder_siblings(location.uuid, parent_uuid, new_ordered_uuids)`, перезагрузить `:tree`.
-- `"delete_space"` (`%{"uuid" => uuid}`) — `data-confirm` на кнопке в `space_tree_node` уже предупреждает о каскаде ("Delete this space and everything inside it? This cannot be undone." — hard delete, без "отметить на удаление" смягчения, т.к. в immediate-commit модели удаление окончательное сразу); `Spaces.delete_space/2`, перезагрузить `:tree`, если удалённый узел был `:selected_uuid` — сбросить в `nil`.
+- `"open_add_root"` / `"open_add_child"` (`%{"parent_uuid" => uuid}` или без параметра для root) — открывает мини-форму создания (`assign(:adding_parent_uuid, uuid_or_:root, :new_space_form, to_form(Spaces.change_space(%Space{})))`). Имя `"open_add_root"` совпадает с событием, которое шлёт кнопка "+ Add root space" в `space_tree/1` (задача 8) — единое имя на обеих сторонах.
+- `"validate_new_space"` / `"create_space"` (`%{"space" => params}`) — `Spaces.create_space(Map.merge(params, %{"location_uuid" => location.uuid, "parent_uuid" => parent_uuid}), actor_opts(socket))`; при успехе — перезагрузить `:tree` из `Spaces.list_tree/1`, `expanded` дополнить `parent_uuid` (авто-развернуть), закрыть мини-форму, `assign(:selected_uuid, new_space.uuid)`; при ошибке — оставить форму открытой с ошибками (обычный changeset-flow).
+- `"start_rename_space"` / `"rename_space_input"` / `"rename_space"` / `"cancel_rename_space"` — инлайн-переименование: на submit `Spaces.update_space(space, %{"name" => new_name}, actor_opts(socket))`, перезагрузить `:tree`.
+- `"move_space_up"` / `"move_space_down"` (`%{"uuid" => uuid}`) — найти сиблингов узла в `:tree` (тот же `parent_uuid`), поменять местами с соседом, вызвать `Spaces.reorder_siblings(location.uuid, parent_uuid, new_ordered_uuids, actor_opts(socket))`, перезагрузить `:tree`.
+- `"delete_space"` (`%{"uuid" => uuid}`) — `data-confirm` на кнопке в `space_tree_node` уже предупреждает о каскаде ("Delete this space and everything inside it? This cannot be undone." — hard delete, без "отметить на удаление" смягчения, т.к. в immediate-commit модели удаление окончательное сразу); `Spaces.delete_space(space, actor_opts(socket))`, перезагрузить `:tree`, если удалённый узел был `:selected_uuid` — сбросить в `nil`.
+
+Все четыре мутирующих вызова контекста (`create_space/2`, `update_space/3`, `reorder_siblings/4`, `delete_space/2`) обязательно передают `actor_opts(socket)` последним аргументом — иначе activity log (`spaces.ex` форвардит `:actor_uuid` из `opts`) тихо теряет запись об авторе изменения. `actor_opts/1` — та же приватная функция, что уже существует в `location_form_live.ex:2270` (задача 14 явно оставляет её нетронутой); `LocationStructureLive` — отдельный модуль, поэтому заводит свою копию `actor_opts/1` по тому же образцу (читает `socket.assigns` на предмет текущего админа).
 
 Форма "add child/root" рендерится как всплывающий/инлайн блок под кнопкой "+" (не глубже, чем сама секция — `kind` через `<.select>` с опциями `Enum.map(Space.kinds(), &{Space.kind_label(&1), &1})`, `name` обязательный текст-инпут).
 
@@ -284,15 +275,27 @@ use Gettext, backend: PhoenixKitLocations.Gettext
 
 **Файл:** `location_structure_live.ex` (продолжение)
 
-- При `selected_uuid != nil`: рендерится карточка ниже дерева — форма редактирования выбранного Space (`kind` select, translatable `name`/`description` — **без** мультиязычности в v0.4 MVP, если Locations-мультиязычность не критична для Spaces сразу, можно оставить `name`/`description` как обычные текстовые поля первого прохода; если требуется паритет с Location — использовать `MultilangForm.translatable_field` по тому же образцу, что раньше был в `render_floor_view`/`render_room_editor`), `notes` textarea, `status` select (active/inactive — здесь и живёт "деактивация" из DEVELOPMENT_PLAN §4), submit → `Spaces.update_space/3`, при успехе — refresh `:tree` (имя/kind могли измениться).
+**Мультиязычность (обязательна, решение №3 шапки — без исключений для v0.4 MVP):**
+
+- Модуль добавляет `import PhoenixKitWeb.Components.MultilangForm` и `import PhoenixKitWeb.Components.LanguageSwitcher, only: [language_switcher: 1]` (тот же импорт, что в `location_form_live.ex:9-10`).
+- В `mount/3` (продолжая цепочку из задачи 9) добавить `|> mount_multilang()` — та же функция, что использует `LocationFormLive` (`location_form_live.ex:74`), даёт `:multilang_enabled`, `:primary_language`, `:language_tabs`, `:current_lang` на уровне сокета. В отличие от старого floor/room-флоу, здесь **не** нужен shadow-socket трюк `with_draft_lang/2` — открыта максимум одна деталь-панель (один выбранный узел), поэтому Space-форма делит один и тот же `:current_lang`, что и (потенциально) остальная страница; отдельного per-draft языкового состояния не заводим.
+- Добавить `handle_event("switch_language", %{"lang" => lang_code}, socket)` → `{:noreply, handle_switch_language(socket, lang_code)}` — 1:1 копия клаузы `location_form_live.ex:275-276` (обе функции публичные в core `MultilangForm`, доступны через импорт).
+- В `handle_event("select_space", ...)` (задача 9) — дополнительно установить `:selected_space` (сам `%Space{}` — плоский обход `:tree` по `uuid`, дерево уже в памяти) и `:space_form`/`:space_changeset` через `Spaces.change_space(selected_space)`, чтобы деталь-панель ниже сразу имела форму для рендера.
+
+**Деталь-панель:**
+
+- При `selected_uuid != nil`: рендерится карточка ниже дерева — форма редактирования выбранного Space: `kind` select; `name`/`description` — **обязательно** через `<.translatable_field>` (без опции "обычные текстовые поля", 1:1 по образцу `render_floor_view`/`render_room_editor` в `location_form_live.ex:1759-1786`): `field_name="name"`/`"description"`, `form_prefix="space"`, `changeset={@space_changeset}`, `schema_field={:name}`/`{:description}`, `multilang_enabled={@multilang_enabled}`, `current_lang={@current_lang}`, `primary_language={@primary_language}`, `lang_data={@space_lang_data}`; над полями — `<.language_switcher languages={@language_tabs} current_language={@current_lang} on_click="switch_language" variant={:tabs} size={:sm} />`, показывается только когда `@multilang_enabled and match?([_, _ | _], @language_tabs)` (тот же guard, что у `<.multilang_tabs>` в `LocationFormLive`); `notes` textarea, `status` select (active/inactive — здесь и живёт "деактивация" из DEVELOPMENT_PLAN §4).
+- `:space_lang_data` вычисляется как `get_lang_data(@space_changeset, @current_lang, @multilang_enabled)` — публичная функция `MultilangForm.get_lang_data/3` (уже импортирована выше), тот же вызов, что раньше прятался за приватной `space_lang_data/2`-обёрткой в `location_form_live.ex:2333-2336`; здесь обёртка не нужна, т.к. `@space_changeset` никогда не бывает `nil`, когда панель видна.
+- `handle_event("validate_space_form", %{"space" => params}, socket)` (`phx-change` формы) — `params = merge_translatable_params(params, socket, ~w(name description), changeset: @space_changeset, preserve_fields: %{"status" => :status, "kind" => :kind})` (публичная `MultilangForm.merge_translatable_params/4`, тот же паттерн, что раньше жил в `validate_space`/`location_form_live.ex:517-521` для floor/room-драфтов — переносится сюда, в постоянный immediate-commit флоу, ДО того как задача 14 удалит старую копию), затем `Spaces.change_space(selected_space, params) |> Map.put(:action, :validate)` → `assign(:space_changeset, ...)`.
+- `handle_event("update_space_form", %{"space" => params}, socket)` (submit) — та же `merge_translatable_params/4`, затем `params = Attachments.inject_attachment_data(params, socket, socket.assigns.selected_uuid)` (arity 3: `params, socket, scope` — тот же вызов, что `location_form_live.ex:52` делает для Location-scope, здесь со scope = выбранный Space, чтобы pending featured-image/upload-состояние атомарно попало в `data` вместе с обычными полями), затем `Spaces.update_space(selected_space, params, actor_opts(socket))`; при успехе — refresh `:tree` (имя/kind могли измениться) и обновить `:selected_space`/`:space_changeset` из свежих данных; при ошибке — `assign(:space_changeset, changeset)` с ошибками формы.
 - Breadcrumb полного пути к выбранному Space — **не** через `Spaces.full_path/2` (тот появится в задаче 18 и требует лишний DB-запрос); вместо этого дешёвый локальный helper `ancestor_chain(tree, selected_uuid)`, который обходит уже загруженное в памяти `:tree` (список `parent_uuid`-цепочки от корня до узла, O(глубина)) — рендерится как `Location.name / Floor 1 / Zone A / Shelf 3`.
-- Files-карточка для выбранного Space: `import PhoenixKitLocations.Web.Components.FilesCard, only: [files_card_body: 1]`, `<.files_card_body scope={@selected_uuid} state={Attachments.state(%{assigns: assigns}, @selected_uuid)} uploads={@uploads} .../>`.
-- В `mount/3` добавить `Attachments.init() |> Attachments.allow_attachment_upload()`.
+- Files-карточка для выбранного Space: `import PhoenixKitLocations.Web.Components.FilesCard, only: [files_card_body: 1]`, `<.files_card_body scope={@selected_uuid} state={Attachments.state(%{assigns: assigns}, @selected_uuid)} uploads={@uploads} .../>`. Хук `PkLocationsUploadScope`, который использует дропзона внутри `files_card_body/1`, приходит бесплатно как ColocatedHook, скомпилированный вместе с `FilesCard` в задаче 5 — ничего копировать здесь не нужно.
+- В `mount/3` добавить в конец assign-конвейера `|> Attachments.init() |> Attachments.allow_attachment_upload()` (`Attachments.init/1` — принимает `socket` через пайплайн, точно как в `LocationFormLive:75`; арность 1, не 0).
 - В `handle_event("select_space", ...)` — дополнительно вызвать `Attachments.mount(socket, scope: uuid, resource: selected_space)` (ленивая инициализация scope только для выбранного узла, не для всего дерева сразу — деревья могут быть глубокими). **Важно:** т.к. в immediate-commit модели Space уже существует в БД с реальным uuid к моменту выбора, `Attachments.maybe_rename_pending_folder_for/2` здесь **не нужен** (в отличие от старого draft-флоу) — папка сразу получает детерминированное имя `location-space-<uuid>` при первом upload/featured-image.
 - Добавить те же 5 attachment-хендлеров, что в `LocationFormLive` (делегируют в `Attachments`): `open_featured_image_picker`, `close_media_selector`, `cancel_upload`, `remove_file`, `clear_featured_image`, `set_active_upload_scope`; и `handle_info({:media_selected, ...})` / `{:media_selector_closed}` — копия существующих клауз из `location_form_live.ex:391-409` и `:1244-1248`.
-- Добавить в `render/1` тот же `<.live_component module={PhoenixKitWeb.Live.Components.MediaSelectorModal} .../>` и тот же inline `<script>` JS hook `PkLocationsUploadScope` (копия из `location_form_live.ex:1297-1312` — идемпотентная регистрация через `window.PhoenixKitHooks`, безопасно дублировать между двумя LiveView).
+- Добавить в `render/1` тот же `<.live_component module={PhoenixKitWeb.Live.Components.MediaSelectorModal} .../>`. Отдельный JS hook в `render/1` добавлять не нужно (см. выше — приходит вместе с `FilesCard`).
 
-**Проверка:** в UI andi (после restart) — выбрать узел дерева, отредактировать поля, сохранить; загрузить файл/установить featured image для конкретного Space; убедиться, что файл Space'а не путается с файлами Location или других Spaces (разные scope-папки `location-space-<uuid>`).
+**Проверка:** в UI andi (после restart) — выбрать узел дерева, переключить язык детали-панели и убедиться, что `name`/`description` редактируются отдельно на каждом языке (паритет с Location), отредактировать поля, сохранить; загрузить файл/установить featured image для конкретного Space; убедиться, что файл Space'а не путается с файлами Location или других Spaces (разные scope-папки `location-space-<uuid>`).
 
 ## Задача 14. Демонтаж staged floor/room-черновика в `LocationFormLive`
 
@@ -310,9 +313,10 @@ use Gettext, backend: PhoenixKitLocations.Gettext
 - `finish_save/5` — убрать полностью (обе клаузы, `reseat_active_tabs/2`, `remount_space_scopes/2`); `save_location` теперь сразу вызывает `sync_types_and_redirect/3` на успехе.
 - Весь блок `persist_space_drafts/3` … `format_draft_error_reason/1` (~строки 925-1241): `persist_space_drafts`, `orphan_blank_floor?/2`, `blank_changeset_name?/1`, `persist_floor_drafts/5`, `step_floor_draft/5`, `apply_floor_persist_result/5`, `persist_floor/4` (3 клаузы), `persist_room_drafts/6`, `step_room_draft/7`, `persist_room/5` (3 клаузы), `draft_id?/1`, `scope_has_attachment_changes?/3`, `resolve_parent_uuid/2`, `space_to_attrs/1`, `blank_required_field?/1`, `draft_error_summary/1`, `format_draft_error_reason/1` (2 клаузы) — удалить целиком.
 - `render_spaces_section/1`, `render_floor_view/1`, `render_room_editor/1` (~строки 1637-2013) — удалить целиком; в `render/1` удалить вызов `{render_spaces_section(assigns)}` и поясняющий комментарий над ним (~1515-1522).
-- `draft_language_strip/1`, `floor_nav_tab_maps/1`, `floor_tab_label/1`, `room_row_label/1`, `space_lang_data/2` (~строки 2238-2337) — удалить.
+- `draft_language_strip/1`, `floor_nav_tab_maps/1`, `floor_tab_label/1`, `room_row_label/1`, `space_lang_data/2` — удалить СТРОГО по этим именам, **не** по диапазону строк: физически этот участок файла (~2238-2337 на момент исследования) ПЕРЕСЕКАЕТСЯ с сохраняемыми функциями `section_heading/1` (~2261), `actor_opts/1` (~2270), `feature_label/1` (~2280) — их не задевать при удалении.
+- Ставшие неиспользуемыми после остального удаления в этой задаче `import PhoenixKitWeb.Components.Core.NavTabs, only: [nav_tabs: 1]` — `<.nav_tabs>` использовался только внутри удаляемого `render_floor_view/1` (floor-табы), больше нигде в файле не вызывается; убрать импорт, иначе `mix compile --warnings-as-errors` (шаг "Проверка" ниже) упадёт на unused import. (`alias PhoenixKit.Modules.Storage.URLSigner` за аналогичный неиспользуемый импорт уже отвечает задача 5 — он становится мёртвым сразу при переносе `files_card_body/1`, раньше, чем эта задача.)
 
-**Дополнительное упрощение (следствие удаления секции Spaces):** секция Spaces была единственной причиной разбивать форму на два `<.form>` (`location-form-top`/`location-form-bottom`) — после её удаления объединить оба блока обратно в один `<.form id="location-form">`, обёртывающий Public Info + Address + Contact + Features + Files + Internal. Это позволяет убрать `merge_running_changes/2` и его использование в `handle_event("validate", ...)`/`handle_event("save", ...)` — обычный `to_form(changeset)` цикл достаточен для одной формы.
+**Дополнительное упрощение (следствие удаления секции Spaces) — слияние `location-form-top`/`location-form-bottom`:** ПЕРЕД тем как сливать формы и удалять `merge_running_changes/2`, проверить фактическое содержимое `location-form-bottom` (`location_form_live.ex:1524-1624` на момент исследования) — оно **не** является "исключительно Spaces-разметкой": там живут Files-карточка Location-scope, Internal notes, Status select, переключатели Location Types и кнопка submit. Слияние всё равно безопасно, потому что причина раздельных `<.form>` НЕ в том, что нижняя половина Spaces-специфична, а в том, что нетронутый `render_spaces_section(assigns)` вызывается МЕЖДУ двумя `<.form>` как обычный компонент (не `<form>`-элемент) — вложенные HTML `<form>` невозможны, поэтому верхнюю форму приходилось закрывать перед этим вызовом и открывать новую после; обе половины уже используют один и тот же `@form`, `phx-change="validate"`, `phx-submit="save"`. После удаления `render_spaces_section(assigns)` (см. выше) единственная причина разрыва исчезает — объединить оба блока обратно в один `<.form id="location-form">`, обёртывающий Public Info + Address + Contact + Features + Files + Internal, и убрать `merge_running_changes/2` из `handle_event("validate", ...)`/`handle_event("save", ...)` — обычный `to_form(changeset)` цикл достаточен для одной формы. Если на момент реализации фактическое содержимое `location-form-bottom` отличается от описанного здесь (появились Spaces-специфичные поля) — перепроверить рассуждение заново, а не сливать вслепую.
 
 **Оставить без изменений:** `@translatable_fields`, `@preserve_fields`, `@feature_keys`, `mount/3` (без spaces-веток), `handle_event` для `switch_language`/`validate`/`toggle_type`/`toggle_feature`/`check_address` (упрощённые), attachment-хендлеры Location-scope, `handle_info`, `sync_types_and_redirect/3`, `render/1` (без Spaces-секции, с одной формой), `section_heading/1`, `actor_opts/1`, `feature_label/1` — остаются как есть.
 
@@ -376,7 +380,18 @@ end
 
 Приватные хелперы:
 - `ancestors_in_order/1` — CTE от `space.parent_uuid` вверх (мирроринг `Tree.ancestor_uuids/1` + `Tree.ancestors_in_order/1`, `walk_up/3`), возвращает `[Space.t()]` root → прямой родитель.
-- `translated_name/2` — `%{data: data, name: name}` → `get_in(data, [locale, "name"]) || name` (mirror `ItemPicker`'s `translated_name/2` из catalogue; `locale == nil` → сразу `name`).
+- `translated_name/2` — **не** писать свой `get_in(data, [locale, "name"]) || name`-ридер (некорректен: primary-язык хранится в колонке `name`, а не под ключом `data[locale]`, поэтому такой `get_in` вернёт `nil` для primary языка и не смёрджит fallback). Вместо этого переиспользовать существующий публичный core-хелпер чтения мультиязычных данных — `PhoenixKit.Utils.Multilang.get_language_data/2` (тот же, на который делегирует `Catalogue.Translations.get_translation/2`, а через него — `ItemPicker.translated_name/2`, приватная в catalogue, но реализующая ровно этот паттерн fallback-цепочки — копировать паттерн, не вызывать catalogue-функцию напрямую):
+  ```elixir
+  alias PhoenixKit.Utils.Multilang
+
+  defp translated_name(%{name: name}, nil), do: name
+
+  defp translated_name(%{data: data, name: name}, locale) do
+    translation = Multilang.get_language_data(data, locale)
+    Map.get(translation, "name") || name
+  end
+  ```
+  `get_language_data/2` уже мёрджит primary-данные с оверрайдами нужного языка (см. `PhoenixKit.Utils.Multilang` в core) — ровно то поведение, которое нужно для `name`/`description` у `Location`/`Space`.
 
 **Проверка:** `test/spaces_test.exs` — добавить кейсы: `full_path/2` для 3-уровневого дерева возвращает `"Location / Floor / Zone / Shelf"`; для корневого space — `"Location / Floor"`; несуществующий uuid → `nil`; с `locale: "ru"` при заполненном `data["ru"]["name"]` — русские сегменты.
 
@@ -390,6 +405,7 @@ end
 - `mount/1`: `assign(query: "", matches: [], open: false, selected_location: nil, tree: [], expanded: MapSet.new())`.
 - `handle_event("location_query_change", %{"value" => q}, socket)` — `Locations.list_locations(status: "active", type_uuid: socket.assigns.location_type_uuid)` (существующая функция, без изменений), отфильтровать по подстроке `q` в Elixir (локаций типично немного — не нужен отдельный `search_locations/2` в контексте, в отличие от `Catalogue.search_items/2`).
 - `handle_event("select_location", %{"uuid" => uuid}, socket)` — `Locations.get_location(uuid)`, `Spaces.list_tree(uuid)`, сброс `selected_space_uuid`.
+- `handle_event("toggle_space_node", %{"uuid" => uuid}, socket)` — toggle в MapSet `expanded` (`SpaceTree.space_tree_node/1`, задача 8, шлёт это событие по умолчанию наравне с `select_space`/`on_toggle`; без этого обработчика дерево внутри пикера не разворачивается — узлы кликабельны для выбора, но стрелка expand/collapse будет no-op).
 - `handle_event("select_space", %{"uuid" => uuid}, socket)` (переиспользует то же имя события, что `SpaceTree` шлёт по умолчанию, но таргетировано на `@myself` — LiveComponent) — `send(self(), {:place_picker_select, id, %{location_uuid: ..., space_uuid: uuid}})`.
 - Кнопка/пункт "Use this location (no specific space)" — тот же message с `space_uuid: nil`.
 - `handle_event("clear_location", ...)` — сброс к состоянию поиска.
@@ -409,8 +425,8 @@ type = Locations.get_location_type_by_name("Warehouse")
 
 **Файлы:**
 - Создать `/www/phoenix_kit_locations/test/support/place_picker_harness_live.ex` — минимальный `Phoenix.LiveView`, монтирующий один `<.live_component module={PlacePicker} id="harness-picker" />` и `handle_info({:place_picker_select, _id, place}, socket)`, сохраняющий `place` в assigns для проверки через `render/1`.
-- Добавить роут в `test/support/test_router.ex`: `live("/__test__/place-picker", PlacePickerHarnessLive, :index)` (вне `/admin/locations` скоупа — служебный, только для тестов).
-- Создать `test/phoenix_kit_locations/web/components/place_picker_test.exs`: поиск локации по подстроке → выбор → сообщение `{:place_picker_select, ...}` долетает до host; фильтр по `location_type_uuid` исключает локации другого типа; выбор Space в дереве прокидывает `space_uuid`; "Use this location" даёт `space_uuid: nil`.
+- Добавить роут в `test/support/test_router.ex` **внутри уже существующего** `scope "/en/admin/locations", PhoenixKitLocations.Web do ... live_session :locations_test, ... do` (не отдельным top-level scope — единственный `live_session`/root-layout в тестовом роутере уже настроен там; служебный путь для теста, не показывается в реальном UI): `live("/__test__/place-picker", PlacePickerHarnessLive, :index)`, итоговый URL — `/en/admin/locations/__test__/place-picker`.
+- Создать `test/phoenix_kit_locations/web/components/place_picker_test.exs`: `live(conn, "/en/admin/locations/__test__/place-picker")` для mount; поиск локации по подстроке → выбор → сообщение `{:place_picker_select, ...}` долетает до host; фильтр по `location_type_uuid` исключает локации другого типа; выбор Space в дереве (включая предварительный `toggle_space_node` для разворачивания) прокидывает `space_uuid`; "Use this location" даёт `space_uuid: nil`.
 
 **Проверка:** `mix test test/phoenix_kit_locations/web/components/place_picker_test.exs`; `mix test` (весь набор) зелёный; `mix format && mix quality` (алиас: format + credo --strict + dialyzer) без ошибок; финальный `mix precommit`-эквивалент — `mix compile --force --warnings-as-errors && mix quality.ci`.
 
