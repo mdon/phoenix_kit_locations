@@ -8,7 +8,7 @@
 >
 > **Правка кросс-чека:** публичный API пути — `Spaces.full_path/2` (НЕ `Paths.full_path` — Paths остаётся модулем URL-хелперов); DEVELOPMENT_PLAN.md §5 обновлён.
 
-> **ОБЯЗАТЕЛЬНЫЕ ПРАВКИ ПО ИТОГАМ 4-СТОРОННЕГО РЕВЬЮ (2026-07-10, GLM/Sonnet/Kimi/Vibe; все пункты проверены по коду):**
+> **ОБЯЗАТЕЛЬНЫЕ ПРАВКИ ПО ИТОГАМ 5-СТОРОННЕГО РЕВЬЮ (2026-07-10, GLM/Sonnet/Kimi/Vibe/Opus-max; все пункты проверены по коду):**
 > 1. **[blocker] Задачи 8 и 19 — форма узла дерева.** `Spaces.list_tree/1` возвращает узлы-`%Space{}` с ключом `:children` НА самом узле (`build_tree` = `Map.put(space, :children, ...)`, spaces.ex:73-79). Обёртки `:space` нет: писать `node.kind`/`node.name`/`node.uuid`/`node.children`, НЕ `node.space.kind`.
 > 2. **[blocker] Задача 13 — мультиязычность безусловно.** Убрать вариант «без мультиязычности в v0.4 MVP»: `MultilangForm.translatable_field` для name/description обязателен (решение №3 шапки). Логику слияния locale-data (аналог `merge_translatable_params`/`space_lang_data` из удаляемого staged-флоу) перенести в `LocationStructureLive` ДО удаления в задаче 14.
 > 3. **[blocker] Задачи 8↔12 — имя события.** Унифицировать: `on_add_root` default и обработчик — одно имя (`"open_add_root"`), сейчас в задаче 8 указано `"add_root_space"`, в задаче 12 — `"open_add_root"` (кнопка была бы no-op).
@@ -19,6 +19,8 @@
 > 8. **[minor] Задача 1.** В `mix.exs` `package/0.files` нет `priv` — новые .po не попадут в Hex-артефакт; добавить `"priv"` (сборке path-dep не мешает, важно при публикации).
 > 9. **[minor] Задача 5.** `files_card_body/1` фактически начинается на :2028 (не :2015 — это attr-декларации); ориентироваться по имени функции.
 > 10. **Согласование с планом склада:** потребитель PlacePicker в волне 1 — финальная опциональная задача склада T23 («заменить `<select>` на PlacePicker после locations v0.5»); формулировка решения №1 в шапке уточнена именно так.
+> 11. **[minor, Opus] Задачи 2–3 — gettext-извлечение.** Функциональная форма `Gettext.gettext(PhoenixKitLocations.Gettext, "Floor")` НЕ сканируется `mix gettext.extract` (извлекаются только макро-вызовы). Либо `kind_label/1` вынести в модуль с `use Gettext, backend: PhoenixKitLocations.Gettext` и макро-формой `gettext("Floor")`, либо завести msgid в .pot/.po вручную и убрать шаг extract.
+> 12. **[minor, Opus] Задача 7.** Утверждение «WarehouseHeader использует core PhoenixKitWeb.Gettext» неверно — там `use Gettext, backend: PhoenixKitWarehouse.Gettext` (warehouse_header.ex:12). Для LocationTabs использовать собственный backend модуля.
 
 
 # План: иерархия площадок в phoenix_kit_locations (v0.3 → v0.5)
