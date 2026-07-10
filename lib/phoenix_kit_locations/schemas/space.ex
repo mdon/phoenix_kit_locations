@@ -27,6 +27,7 @@ defmodule PhoenixKitLocations.Schemas.Space do
 
   use Ecto.Schema
   import Ecto.Changeset
+  use Gettext, backend: PhoenixKitLocations.Gettext
 
   alias PhoenixKitLocations.Schemas.Location
 
@@ -35,13 +36,14 @@ defmodule PhoenixKitLocations.Schemas.Space do
   @primary_key {:uuid, UUIDv7, autogenerate: true}
   @foreign_key_type UUIDv7
 
-  # V1 of the Spaces UI only exposes two kinds: floor (top-level
-  # subdivision of a location) and room (children of a floor). The DB
-  # CHECK constraint (V122 in core) intentionally still allows a wider
-  # set so we can grow into it without an immediate migration when
-  # halls/suites/aisles/etc. become useful again — narrowing happens
-  # in app-layer validation here.
-  @kinds ~w(floor room)
+  # The Spaces tree exposes six kinds: floor and room (top-level
+  # subdivisions of a location) plus zone/section/aisle/shelf for
+  # finer-grained subdivisions (production zones/sections, warehouse
+  # addressable storage). The DB CHECK constraint (V122 in core)
+  # intentionally still allows a wider set (hall, suite, corner)
+  # reserved for future growth without an immediate migration —
+  # narrowing to the app-layer list happens here.
+  @kinds ~w(floor room zone section aisle shelf)
   @statuses ~w(active inactive)
 
   schema "phoenix_kit_location_spaces" do
@@ -119,4 +121,31 @@ defmodule PhoenixKitLocations.Schemas.Space do
 
   def kinds, do: @kinds
   def statuses, do: @statuses
+
+  @doc """
+  Human-readable label for a `kind` value, translated via the module's
+  own Gettext backend. Falls back to the raw kind string for anything
+  outside `@kinds` (e.g. reserved-but-unused DB CHECK values).
+  """
+  @spec kind_label(String.t()) :: String.t()
+  def kind_label("floor"), do: gettext("Floor")
+  def kind_label("room"), do: gettext("Room")
+  def kind_label("zone"), do: gettext("Zone")
+  def kind_label("section"), do: gettext("Section")
+  def kind_label("aisle"), do: gettext("Aisle")
+  def kind_label("shelf"), do: gettext("Shelf")
+  def kind_label(kind), do: kind
+
+  @doc """
+  Heroicon name for a `kind` value, used by the Spaces tree UI.
+  Falls back to a generic cube icon for anything outside `@kinds`.
+  """
+  @spec kind_icon(String.t()) :: String.t()
+  def kind_icon("floor"), do: "hero-building-office-2"
+  def kind_icon("room"), do: "hero-squares-2x2"
+  def kind_icon("zone"), do: "hero-map"
+  def kind_icon("section"), do: "hero-view-columns"
+  def kind_icon("aisle"), do: "hero-arrows-right-left"
+  def kind_icon("shelf"), do: "hero-archive-box"
+  def kind_icon(_kind), do: "hero-cube"
 end
