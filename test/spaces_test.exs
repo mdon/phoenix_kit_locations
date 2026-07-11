@@ -205,6 +205,69 @@ defmodule PhoenixKitLocations.SpacesTest do
   end
 
   # ═══════════════════════════════════════════════════════════════════
+  # count_descendants/1
+  # ═══════════════════════════════════════════════════════════════════
+
+  describe "count_descendants/1" do
+    test "returns 0 for a leaf space" do
+      location = create_location()
+      space = create_space(location.uuid, %{"kind" => "floor", "name" => "Solo"})
+
+      assert Spaces.count_descendants(space.uuid) == 0
+    end
+
+    test "counts every descendant across multiple levels, not just direct children" do
+      location = create_location()
+      floor = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 1"})
+
+      zone =
+        create_space(location.uuid, %{
+          "kind" => "zone",
+          "name" => "Zone A",
+          "parent_uuid" => floor.uuid
+        })
+
+      _shelf_1 =
+        create_space(location.uuid, %{
+          "kind" => "shelf",
+          "name" => "Shelf 1",
+          "parent_uuid" => zone.uuid
+        })
+
+      _shelf_2 =
+        create_space(location.uuid, %{
+          "kind" => "shelf",
+          "name" => "Shelf 2",
+          "parent_uuid" => zone.uuid
+        })
+
+      # Floor -> Zone -> {Shelf 1, Shelf 2}: 3 descendants under the
+      # floor, 2 under the zone (the two shelves, not the zone itself).
+      assert Spaces.count_descendants(floor.uuid) == 3
+      assert Spaces.count_descendants(zone.uuid) == 2
+    end
+
+    test "does not count siblings or unrelated subtrees" do
+      location = create_location()
+      a = create_space(location.uuid, %{"kind" => "floor", "name" => "A"})
+      _b = create_space(location.uuid, %{"kind" => "floor", "name" => "B"})
+
+      _a_child =
+        create_space(location.uuid, %{
+          "kind" => "room",
+          "name" => "A child",
+          "parent_uuid" => a.uuid
+        })
+
+      assert Spaces.count_descendants(a.uuid) == 1
+    end
+
+    test "returns 0 for a nonexistent uuid" do
+      assert Spaces.count_descendants(Ecto.UUID.generate()) == 0
+    end
+  end
+
+  # ═══════════════════════════════════════════════════════════════════
   # reorder_siblings/4
   # ═══════════════════════════════════════════════════════════════════
 

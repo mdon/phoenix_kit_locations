@@ -378,8 +378,81 @@ defmodule PhoenixKitLocations.Web.LocationStructureLiveTest do
     end
   end
 
-  describe "delete" do
-    test "delete_space hard-deletes and cascades to every descendant, logging only the root",
+  describe "delete_space — opens the confirmation modal without deleting" do
+    test "shows the space's name and its descendant count, without deleting anything yet",
+         %{conn: conn} do
+      location = fixture_location()
+      floor = fixture_space(location.uuid, %{"kind" => "floor", "name" => "Floor 1"})
+
+      zone =
+        fixture_space(location.uuid, %{
+          "kind" => "zone",
+          "name" => "Zone A",
+          "parent_uuid" => floor.uuid
+        })
+
+      _shelf =
+        fixture_space(location.uuid, %{
+          "kind" => "shelf",
+          "name" => "Shelf 1",
+          "parent_uuid" => zone.uuid
+        })
+
+      {:ok, view, _html} = live(conn, structure_path(location))
+      rendered = render_click(view, "delete_space", %{"uuid" => floor.uuid})
+
+      assert rendered =~ "Floor 1"
+      assert rendered =~ "and its 2 descendants"
+      assert rendered =~ "This cannot be undone."
+
+      # Nothing is deleted until the modal's own confirm button fires.
+      assert Spaces.get_space(floor.uuid) != nil
+      assert Spaces.get_space(zone.uuid) != nil
+    end
+
+    test "omits the descendants phrase for a leaf space (0 descendants)", %{conn: conn} do
+      location = fixture_location()
+      space = fixture_space(location.uuid, %{"kind" => "floor", "name" => "Solo Floor"})
+
+      {:ok, view, _html} = live(conn, structure_path(location))
+      rendered = render_click(view, "delete_space", %{"uuid" => space.uuid})
+
+      assert rendered =~ "Solo Floor"
+      assert rendered =~ "This cannot be undone."
+      refute rendered =~ "descendants"
+
+      assert Spaces.get_space(space.uuid) != nil
+    end
+
+    test "delete_space with an unknown uuid flashes not-found without opening the modal",
+         %{conn: conn} do
+      location = fixture_location()
+      {:ok, view, _html} = live(conn, structure_path(location))
+
+      rendered = render_click(view, "delete_space", %{"uuid" => Ecto.UUID.generate()})
+      assert rendered =~ "Space not found."
+      refute rendered =~ "This cannot be undone."
+      assert Process.alive?(view.pid)
+    end
+  end
+
+  describe "cancel_delete_space" do
+    test "closes the modal without deleting anything", %{conn: conn} do
+      location = fixture_location()
+      space = fixture_space(location.uuid, %{"kind" => "floor", "name" => "Keep Me"})
+
+      {:ok, view, _html} = live(conn, structure_path(location))
+      render_click(view, "delete_space", %{"uuid" => space.uuid})
+
+      rendered = render_click(view, "cancel_delete_space", %{})
+
+      refute rendered =~ "This cannot be undone."
+      assert Spaces.get_space(space.uuid) != nil
+    end
+  end
+
+  describe "confirm_delete_space — the only path that actually deletes" do
+    test "hard-deletes and cascades to every descendant, logging only the root",
          %{conn: conn} do
       location = fixture_location()
       floor = fixture_space(location.uuid, %{"kind" => "floor", "name" => "Floor 1"})
@@ -402,7 +475,8 @@ defmodule PhoenixKitLocations.Web.LocationStructureLiveTest do
       conn = put_test_scope(conn, scope)
 
       {:ok, view, _html} = live(conn, structure_path(location))
-      rendered = render_click(view, "delete_space", %{"uuid" => floor.uuid})
+      render_click(view, "delete_space", %{"uuid" => floor.uuid})
+      rendered = render_click(view, "confirm_delete_space", %{})
 
       refute rendered =~ "Floor 1"
       assert Spaces.get_space(floor.uuid) == nil
@@ -429,6 +503,7 @@ defmodule PhoenixKitLocations.Web.LocationStructureLiveTest do
       assert has_element?(view, "#space-detail-form")
 
       render_click(view, "delete_space", %{"uuid" => space.uuid})
+      render_click(view, "confirm_delete_space", %{})
       refute has_element?(view, "#space-detail-form")
     end
 
@@ -449,15 +524,27 @@ defmodule PhoenixKitLocations.Web.LocationStructureLiveTest do
       assert has_element?(view, "#space-detail-form")
 
       render_click(view, "delete_space", %{"uuid" => floor.uuid})
+      render_click(view, "confirm_delete_space", %{})
       refute has_element?(view, "#space-detail-form")
     end
 
-    test "delete_space with an unknown uuid flashes not-found without crashing", %{conn: conn} do
+    test "closes the modal after deleting", %{conn: conn} do
+      location = fixture_location()
+      space = fixture_space(location.uuid, %{"kind" => "floor", "name" => "Gone Soon"})
+
+      {:ok, view, _html} = live(conn, structure_path(location))
+      render_click(view, "delete_space", %{"uuid" => space.uuid})
+
+      rendered = render_click(view, "confirm_delete_space", %{})
+      refute rendered =~ "This cannot be undone."
+    end
+
+    test "with nothing pending confirmation is a safe no-op", %{conn: conn} do
       location = fixture_location()
       {:ok, view, _html} = live(conn, structure_path(location))
 
-      rendered = render_click(view, "delete_space", %{"uuid" => Ecto.UUID.generate()})
-      assert rendered =~ "Space not found."
+      rendered = render_click(view, "confirm_delete_space", %{})
+      assert is_binary(rendered)
       assert Process.alive?(view.pid)
     end
   end

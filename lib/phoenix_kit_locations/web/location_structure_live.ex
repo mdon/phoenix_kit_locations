@@ -12,6 +12,11 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
   (move up/down), and hard delete. Every mutating call commits straight
   to `Spaces` — the "immediate commit" model (orchestrator decision #4
   at the top of the plan): no staged drafts, no separate save step.
+  Delete is the one exception to "immediate": a hard delete CASCADEs
+  to the whole subtree, so `delete_space` only opens a confirmation
+  modal reporting `Spaces.count_descendants/1` — the actual
+  `Spaces.delete_space/2` call happens from the modal's own Delete
+  button (`confirm_delete_space`), per orchestrator decision #5.
 
   Selecting a node also opens a detail panel below the tree — a
   multilang (name/description), status/notes/kind edit form plus its
@@ -32,6 +37,7 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
   import PhoenixKitWeb.Components.Core.AdminPageHeader, only: [admin_page_header: 1]
   import PhoenixKitWeb.Components.Core.Icon, only: [icon: 1]
   import PhoenixKitWeb.Components.Core.Input
+  import PhoenixKitWeb.Components.Core.Modal, only: [confirm_modal: 1]
   import PhoenixKitWeb.Components.Core.Select
   import PhoenixKitWeb.Components.Core.Textarea
   import PhoenixKitLocations.Web.Components.FilesCard, only: [files_card_body: 1]
@@ -74,6 +80,7 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
            renaming_text: "",
            adding_parent_uuid: nil,
            new_space_form: nil,
+           confirm_delete: nil,
            page_title: page_title(location)
          )
          |> mount_multilang()
@@ -262,15 +269,49 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
     {:noreply, move_sibling(socket, uuid, 1)}
   end
 
-  # ── Delete ────────────────────────────────────────────────────────
+  # ── Delete — modal confirmation (decision #5: hard delete + CASCADE
+  # always requires a confirm step showing the descendant count) ─────
 
+  # `space_tree_node/1`'s trash button — opens the confirmation modal,
+  # never deletes directly. `Spaces.count_descendants/1` runs once,
+  # here, so the modal's copy and every re-render agree on the same
+  # count instead of re-querying on every paint.
   def handle_event("delete_space", %{"uuid" => uuid}, socket) do
     case Spaces.get_space(uuid) do
       nil ->
         {:noreply, put_flash(socket, :error, Errors.message(:space_not_found))}
 
       space ->
-        {:noreply, submit_delete(socket, space)}
+        confirm = %{
+          uuid: space.uuid,
+          name: space.name,
+          descendant_count: Spaces.count_descendants(space.uuid)
+        }
+
+        {:noreply, assign(socket, :confirm_delete, confirm)}
+    end
+  end
+
+  def handle_event("cancel_delete_space", _params, socket) do
+    {:noreply, assign(socket, :confirm_delete, nil)}
+  end
+
+  # The modal's own Delete button — the only place a Space is actually
+  # removed. Re-fetches rather than trusting the uuid captured when the
+  # modal opened, in case the space was deleted from elsewhere in the
+  # meantime.
+  def handle_event("confirm_delete_space", _params, socket) do
+    case socket.assigns.confirm_delete do
+      nil ->
+        {:noreply, socket}
+
+      %{uuid: uuid} ->
+        socket = assign(socket, :confirm_delete, nil)
+
+        case Spaces.get_space(uuid) do
+          nil -> {:noreply, put_flash(socket, :error, Errors.message(:space_not_found))}
+          space -> {:noreply, submit_delete(socket, space)}
+        end
     end
   end
 
@@ -485,6 +526,22 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
           </div>
         </div>
       </div>
+
+      <%!-- Delete confirmation — decision #5: hard delete cascades to the
+           whole subtree, so it's never triggered directly from the tree
+           row's trash icon (see `SpaceTree`'s moduledoc). `delete_space`
+           only opens this; `confirm_delete_space` (the modal's own
+           button) is the sole path that actually calls `Spaces.delete_space/2`. --%>
+      <.confirm_modal
+        show={@confirm_delete != nil}
+        on_confirm="confirm_delete_space"
+        on_cancel="cancel_delete_space"
+        title={gettext("Delete Space")}
+        title_icon="hero-trash"
+        messages={[{:warning, delete_confirm_message(@confirm_delete)}]}
+        confirm_text={gettext("Delete")}
+        danger={true}
+      />
     </div>
     """
   end
@@ -499,6 +556,26 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
   end
 
   defp new_space_form, do: to_form(Spaces.change_space(%Space{}), as: :space)
+
+  # Warning copy for the delete-confirmation modal. `nil` (modal
+  # closed) renders into `confirm_modal`'s `messages` assign anyway —
+  # HEEx evaluates the attribute regardless of `show` — but `show`
+  # being `false` keeps it off-screen, so the empty string is never
+  # actually seen. `descendant_count == 0` drops the "and its N
+  # descendants" clause entirely rather than reading "...and its 0
+  # descendants".
+  defp delete_confirm_message(nil), do: ""
+
+  defp delete_confirm_message(%{name: name, descendant_count: 0}) do
+    gettext(~s(Delete "%{name}"? This cannot be undone.), name: name)
+  end
+
+  defp delete_confirm_message(%{name: name, descendant_count: count}) do
+    gettext(~s(Delete "%{name}" and its %{count} descendants? This cannot be undone.),
+      name: name,
+      count: count
+    )
+  end
 
   defp normalize_parent_uuid(:root), do: nil
   defp normalize_parent_uuid(uuid) when is_binary(uuid), do: uuid

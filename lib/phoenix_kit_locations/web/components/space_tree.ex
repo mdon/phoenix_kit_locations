@@ -29,13 +29,18 @@ defmodule PhoenixKitLocations.Web.Components.SpaceTree do
   Reorder (▲/▼) and rename are the only actions this component treats as
   "immediate" — they fire their event straight away. Everything else
   (creating a space, editing its other fields) is left to a form panel
-  owned by the consumer.
+  owned by the consumer. `delete_space` is deliberately *not* immediate
+  either — no `data-confirm` here, since a hard delete cascades to the
+  whole subtree: the event just asks the consumer to open its own
+  confirmation modal (with the descendant count), which is the only
+  place the actual delete is triggered from.
 
   Consumers implement:
 
       toggle_space_node, select_space,
       start_rename_space, rename_space_input, rename_space, cancel_rename_space,
-      move_space_up, move_space_down, open_add_child, delete_space,
+      move_space_up, move_space_down, open_add_child,
+      delete_space (opens a confirmation — does not delete by itself),
       open_add_root (the "+ Add root space" button in `space_tree/1`)
 
   ## Picker mode
@@ -281,9 +286,6 @@ defmodule PhoenixKitLocations.Web.Components.SpaceTree do
             phx-click="delete_space"
             phx-target={@myself}
             phx-value-uuid={@node.uuid}
-            data-confirm={
-              gettext("Delete this space and everything inside it? This cannot be undone.")
-            }
             class="btn btn-ghost btn-xs p-0 min-h-0 h-5 w-5 text-error"
             title={gettext("Delete")}
           >

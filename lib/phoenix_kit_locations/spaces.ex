@@ -114,6 +114,22 @@ defmodule PhoenixKitLocations.Spaces do
     end
   end
 
+  @doc """
+  Counts every descendant of `space_uuid` — children, grandchildren,
+  and so on — not including the space itself. `0` for a leaf, and `0`
+  for an unknown uuid (rather than raising) so callers don't need a
+  defensive existence check first.
+
+  Backs `LocationStructureLive`'s delete-confirmation modal: before
+  showing "Delete \\"X\\" and its N descendants?", the caller needs the
+  true blast radius of a hard delete (children CASCADE — see
+  `delete_space/2`).
+  """
+  @spec count_descendants(uuid) :: non_neg_integer()
+  def count_descendants(space_uuid) when is_binary(space_uuid) do
+    space_uuid |> descendant_uuids() |> length()
+  end
+
   # ═══════════════════════════════════════════════════════════════════
   # Writes
   # ═══════════════════════════════════════════════════════════════════
@@ -384,6 +400,44 @@ defmodule PhoenixKitLocations.Spaces do
       {:ok, str} -> str
       :error -> raw
     end
+  end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Internals — descendant counting (count_descendants/1)
+  # ═══════════════════════════════════════════════════════════════════
+
+  # Every descendant uuid of `uuid` (raw 16-byte binaries, same shape
+  # `ancestor_uuids/1` returns — `count_descendants/1` only calls
+  # `length/1` on the result, so no textual normalisation is needed
+  # here). Mirrors `ancestor_uuids/1` with the join direction reversed
+  # (`s.parent_uuid == t.uuid` walks *down* instead of `s.uuid ==
+  # t.parent_uuid` walking up) and the same `UNION` (not `UNION ALL`)
+  # cycle safety — Postgres drops rows already seen in the working
+  # table before the next iteration, so a corrupted/cyclic chain still
+  # terminates. Excludes `uuid` itself.
+  defp descendant_uuids(uuid) do
+    initial =
+      from(s in Space,
+        where: s.uuid == type(^uuid, UUIDv7),
+        select: %{uuid: s.uuid}
+      )
+
+    recursion =
+      from(s in Space,
+        join: t in "space_descendant_tree",
+        on: s.parent_uuid == t.uuid,
+        select: %{uuid: s.uuid}
+      )
+
+    cte = union(initial, ^recursion)
+
+    from(t in "space_descendant_tree",
+      where: t.uuid != type(^uuid, UUIDv7),
+      select: t.uuid
+    )
+    |> recursive_ctes(true)
+    |> with_cte("space_descendant_tree", as: ^cte)
+    |> repo().all()
   end
 
   # Resolves a translated `name` for a Location or Space (any map or
