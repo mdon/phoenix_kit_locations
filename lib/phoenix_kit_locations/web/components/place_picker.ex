@@ -204,16 +204,26 @@ defmodule PhoenixKitLocations.Web.Components.PlacePicker do
   # Notifies the parent and mirrors the pick into local state so the
   # tree's highlight (`selected_uuid={@selected_space_uuid}`) updates
   # immediately — the caller doesn't have to echo the attr back in.
-  defp send_selection(socket, space_uuid) do
-    %{id: id, selected_location: location} = socket.assigns
-
+  #
+  # `select_space`/`select_location_only` only render once a Location
+  # is selected, so a normal click can't reach here with
+  # `selected_location: nil` — this clause guards a stale queued event
+  # racing a `clear_location` click instead (mirrors `ItemPicker`'s own
+  # `select` handler no-op-ing on an unresolvable uuid).
+  defp send_selection(
+         %{assigns: %{selected_location: %Location{} = location}} = socket,
+         space_uuid
+       ) do
     send(
       self(),
-      {:place_picker_select, id, %{location_uuid: location.uuid, space_uuid: space_uuid}}
+      {:place_picker_select, socket.assigns.id,
+       %{location_uuid: location.uuid, space_uuid: space_uuid}}
     )
 
     assign(socket, :selected_space_uuid, space_uuid)
   end
+
+  defp send_selection(socket, _space_uuid), do: socket
 
   # ─────────────────────────────────────────────────────────────────
   # Display helpers
