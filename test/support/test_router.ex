@@ -35,6 +35,7 @@ defmodule PhoenixKitLocations.Test.Router do
       # Location CRUD
       live("/new", LocationFormLive, :new)
       live("/:uuid/edit", LocationFormLive, :edit)
+      live("/:uuid/structure", LocationStructureLive, :edit)
 
       # Type CRUD
       live("/types/new", LocationTypeFormLive, :new)
