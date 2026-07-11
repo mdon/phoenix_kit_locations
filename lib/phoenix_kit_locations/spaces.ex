@@ -31,6 +31,8 @@ defmodule PhoenixKitLocations.Spaces do
 
   require Logger
 
+  alias PhoenixKit.Utils.Multilang
+  alias PhoenixKitLocations.Schemas.Location
   alias PhoenixKitLocations.Schemas.Space
 
   @type opts :: keyword()
@@ -86,6 +88,31 @@ defmodule PhoenixKitLocations.Spaces do
   @spec change_space(Space.t(), map()) :: Ecto.Changeset.t()
   def change_space(%Space{} = space, attrs \\ %{}),
     do: Space.changeset(space, attrs)
+
+  @doc """
+  Full breadcrumb path for a Space, root Location through the Space
+  itself: `"Location / Floor / Zone / Shelf"`. `nil` when the space
+  (or its Location) can't be found.
+
+  `opts[:locale]` — when given, each segment's name resolves through
+  `PhoenixKit.Utils.Multilang.get_language_data/2` for that language
+  (falling back to the primary-language column when no translation
+  override exists). Omitted (or `nil`) uses the primary-language
+  column directly for every segment — no `data` JSONB read at all.
+  """
+  @spec full_path(uuid, opts) :: String.t() | nil
+  def full_path(space_uuid, opts \\ []) when is_binary(space_uuid) do
+    locale = Keyword.get(opts, :locale)
+
+    with %Space{} = space <- get_space(space_uuid),
+         %Location{} = location <- repo().get(Location, space.location_uuid) do
+      ancestors = ancestors_in_order(space)
+
+      Enum.map_join([location] ++ ancestors ++ [space], " / ", &translated_name(&1, locale))
+    else
+      nil -> nil
+    end
+  end
 
   # ═══════════════════════════════════════════════════════════════════
   # Writes
@@ -261,6 +288,127 @@ defmodule PhoenixKitLocations.Spaces do
       ^target -> {:error, :cycle}
       next -> walk_ancestors(target, next, location, hops_remaining - 1)
     end
+  end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Internals — path resolution (full_path/2)
+  # ═══════════════════════════════════════════════════════════════════
+
+  # Ancestors of `space`, ordered root → direct parent. `[]` when
+  # `space` is already a root (`parent_uuid == nil`) — skips the CTE
+  # entirely in the common case. Mirrors
+  # `PhoenixKitCatalogue.Catalogue.Tree.ancestor_uuids/1` +
+  # `ancestors_in_order/1` + `walk_up/3`: one recursive CTE walking
+  # `parent_uuid` up from `space`, `UNION` (not `UNION ALL`) so a
+  # corrupted/cyclic chain can't spin forever — Postgres drops rows
+  # already seen in the working table before the next iteration.
+  defp ancestors_in_order(%Space{parent_uuid: nil}), do: []
+
+  defp ancestors_in_order(%Space{} = space) do
+    case ancestor_uuids(space.uuid) do
+      [] ->
+        []
+
+      raw_uuids ->
+        # The CTE's outer select in `ancestor_uuids/1` is schema-less
+        # (`select: t.uuid` off a `with_cte` fragment) — Ecto has no
+        # field type to `load/1` each row through, so it comes back as
+        # the raw 16-byte binary Postgrex decoded off the wire, not
+        # the textual form every loaded `%Space{}.uuid` carries.
+        # Re-querying `Space` with these raw values directly in
+        # `where: s.uuid in ^raw_uuids` would fail:
+        # `Ecto.Type.dump(UUIDv7, <<16 raw bytes>>)` returns `:error`
+        # (`UUIDv7.dump/1` delegates to `Ecto.UUID.dump/1`, which only
+        # accepts the 36-char textual form). Normalise to text first —
+        # same fix `PhoenixKitCatalogue.Catalogue` applies at every
+        # other call site that reuses a Tree CTE's raw-uuid output
+        # (its `load_uuid/1`).
+        uuids = Enum.map(raw_uuids, &load_uuid/1)
+
+        by_uuid =
+          from(s in Space, where: s.uuid in ^uuids)
+          |> repo().all()
+          |> Map.new(&{&1.uuid, &1})
+
+        walk_up(space.parent_uuid, by_uuid, [])
+    end
+  end
+
+  # Recursive CTE returning every ancestor uuid of `uuid` (raw 16-byte
+  # binaries — see `ancestors_in_order/1`), walking up the self-ref
+  # `parent_uuid` chain. Excludes `uuid` itself.
+  defp ancestor_uuids(uuid) do
+    initial =
+      from(s in Space,
+        where: s.uuid == type(^uuid, UUIDv7),
+        select: %{uuid: s.uuid, parent_uuid: s.parent_uuid}
+      )
+
+    recursion =
+      from(s in Space,
+        join: t in "space_ancestor_tree",
+        on: s.uuid == t.parent_uuid,
+        select: %{uuid: s.uuid, parent_uuid: s.parent_uuid}
+      )
+
+    cte = union(initial, ^recursion)
+
+    from(t in "space_ancestor_tree",
+      where: t.uuid != type(^uuid, UUIDv7),
+      select: t.uuid
+    )
+    |> recursive_ctes(true)
+    |> with_cte("space_ancestor_tree", as: ^cte)
+    |> repo().all()
+  end
+
+  # Walks `by_uuid` from `uuid` up to the root, prepending each node as
+  # it climbs — comes out root-first with no separate reverse (the
+  # direct parent is added first so it ends up at the tail; the root
+  # is added last so it ends up at the head).
+  defp walk_up(uuid, by_uuid, acc) do
+    case Map.get(by_uuid, uuid) do
+      %Space{parent_uuid: nil} = s -> [s | acc]
+      %Space{parent_uuid: parent_uuid} = s -> walk_up(parent_uuid, by_uuid, [s | acc])
+      nil -> acc
+    end
+  end
+
+  # Loads a raw 16-byte binary UUID (from the ancestor CTE) back into
+  # the textual `xxxxxxxx-xxxx-...` form so it can be used in a normal
+  # typed `Space` query. Falls back to the raw input on failure —
+  # defensive only, `ancestor_uuids/1`'s output is always a valid
+  # binary UUID in practice.
+  defp load_uuid(raw) do
+    case Ecto.UUID.load(raw) do
+      {:ok, str} -> str
+      :error -> raw
+    end
+  end
+
+  # Resolves a translated `name` for a Location or Space (any map or
+  # struct with a `:name` field and, for the locale-aware clause, a
+  # `:data` field). `locale: nil` skips the JSONB read entirely and
+  # returns the primary-language column as-is.
+  #
+  # Checks `data[locale]["_name"]` before `data[locale]["name"]`:
+  # `PhoenixKitWeb.Components.MultilangForm.merge_translatable_params/4`
+  # — the form write path used by both `LocationFormLive` and this
+  # module's own `LocationStructureLive` detail panel — stores
+  # translatable fields under an underscore-prefixed key (`"_name"`,
+  # mirroring the `"_title"` example in `PhoenixKit.Utils.Multilang`'s
+  # own moduledoc). A bare `Map.get(translation, "name")` would never
+  # see those overrides and would always silently fall back to the
+  # primary-language column regardless of `locale`. The unprefixed
+  # `"name"` fallback covers data written through a different path
+  # (e.g. bulk/AI translation) that stores field names as-is. Mirrors
+  # `PhoenixKitCatalogue.Web.Components.ItemPicker.translated_name/2`
+  # exactly.
+  defp translated_name(%{name: name}, nil), do: name
+
+  defp translated_name(%{data: data, name: name}, locale) do
+    translation = Multilang.get_language_data(data, locale)
+    Map.get(translation, "_name") || Map.get(translation, "name") || name
   end
 
   # ═══════════════════════════════════════════════════════════════════

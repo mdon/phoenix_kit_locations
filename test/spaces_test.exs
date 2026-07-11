@@ -339,4 +339,93 @@ defmodule PhoenixKitLocations.SpacesTest do
       assert Spaces.get_space(r2.uuid).uuid == r2.uuid
     end
   end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # full_path/2
+  # ═══════════════════════════════════════════════════════════════════
+
+  describe "full_path/2" do
+    test "returns the full breadcrumb for a 3-level tree" do
+      location = create_location(%{name: "Warehouse A"})
+      floor = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 1"})
+
+      zone =
+        create_space(location.uuid, %{
+          "kind" => "zone",
+          "name" => "Zone B",
+          "parent_uuid" => floor.uuid
+        })
+
+      shelf =
+        create_space(location.uuid, %{
+          "kind" => "shelf",
+          "name" => "Shelf 3",
+          "parent_uuid" => zone.uuid
+        })
+
+      assert Spaces.full_path(shelf.uuid) == "Warehouse A / Floor 1 / Zone B / Shelf 3"
+    end
+
+    test "returns the location and the space itself for a root-level space" do
+      location = create_location(%{name: "Warehouse A"})
+      floor = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 1"})
+
+      assert Spaces.full_path(floor.uuid) == "Warehouse A / Floor 1"
+    end
+
+    test "returns nil for a nonexistent uuid" do
+      assert Spaces.full_path(Ecto.UUID.generate()) == nil
+    end
+
+    test "with locale: resolves each segment's translated name, falling back to the primary-language column where no override exists" do
+      location = create_location(%{name: "Warehouse A"})
+      floor = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 1"})
+
+      zone =
+        create_space(location.uuid, %{
+          "kind" => "zone",
+          "name" => "Zone B",
+          "parent_uuid" => floor.uuid
+        })
+
+      # `merge_translatable_params/4` (the real form write path used by
+      # `LocationStructureLive`'s detail panel) stores translatable
+      # overrides under an underscore-prefixed key — see
+      # `translated_name/2` in `spaces.ex`.
+      shelf =
+        create_space(location.uuid, %{
+          "kind" => "shelf",
+          "name" => "Shelf 3",
+          "parent_uuid" => zone.uuid,
+          "data" => %{
+            "_primary_language" => "en",
+            "en" => %{"_name" => "Shelf 3"},
+            "ru" => %{"_name" => "Полка 3"}
+          }
+        })
+
+      # Location/Floor/Zone carry no `ru` override, so they fall back
+      # to their primary-language column — only the shelf (which does
+      # carry one) comes back translated.
+      assert Spaces.full_path(shelf.uuid, locale: "ru") ==
+               "Warehouse A / Floor 1 / Zone B / Полка 3"
+    end
+
+    test "with locale: also finds an override stored under the unprefixed field name" do
+      location = create_location(%{name: "Warehouse A"})
+
+      floor =
+        create_space(location.uuid, %{
+          "kind" => "floor",
+          "name" => "Floor 1",
+          "data" => %{
+            "_primary_language" => "en",
+            "en" => %{"name" => "Floor 1"},
+            "ru" => %{"name" => "Этаж 1"}
+          }
+        })
+
+      assert Spaces.full_path(floor.uuid, locale: "ru") == "Warehouse A / Этаж 1"
+    end
+  end
 end
