@@ -65,6 +65,79 @@ defmodule PhoenixKitLocations.SpacesTest do
     end
   end
 
+  describe "create_space/2 — auto position" do
+    test "appends siblings at the end (0, 1, 2, ...) when no position is given" do
+      location = create_location()
+
+      f1 = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 1"})
+      f2 = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 2"})
+      f3 = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 3"})
+
+      positions = positions_by_uuid(location.uuid)
+      assert positions[f1.uuid] == 0
+      assert positions[f2.uuid] == 1
+      assert positions[f3.uuid] == 2
+    end
+
+    test "honors an explicit position instead of computing one" do
+      location = create_location()
+      _f1 = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 1"})
+
+      f2 =
+        create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 2", "position" => 7})
+
+      assert positions_by_uuid(location.uuid)[f2.uuid] == 7
+    end
+
+    test "scopes the next-position computation to the (location, parent) sibling group" do
+      location = create_location()
+      floor_a = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor A"})
+      floor_b = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor B"})
+
+      room_a1 =
+        create_space(location.uuid, %{
+          "kind" => "room",
+          "name" => "A1",
+          "parent_uuid" => floor_a.uuid
+        })
+
+      room_b1 =
+        create_space(location.uuid, %{
+          "kind" => "room",
+          "name" => "B1",
+          "parent_uuid" => floor_b.uuid
+        })
+
+      positions = positions_by_uuid(location.uuid)
+      # Each parent's first child starts back at 0 — the two root
+      # floors (positions 0 and 1) don't leak into their children's
+      # sibling groups.
+      assert positions[room_a1.uuid] == 0
+      assert positions[room_b1.uuid] == 0
+      assert positions[floor_a.uuid] == 0
+      assert positions[floor_b.uuid] == 1
+    end
+
+    test "a space added after a manual reorder still lands at the end, not back at 0" do
+      location = create_location()
+      f1 = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 1"})
+      f2 = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 2"})
+
+      # Swap them: f2 -> 0, f1 -> 1.
+      assert {:ok, :reordered} =
+               Spaces.reorder_siblings(location.uuid, nil, [f2.uuid, f1.uuid])
+
+      # Regression guard: before this fix, a space created without an
+      # explicit position always got the schema default of 0 — which
+      # would tie it with f2 (now at position 0) and put it ahead of
+      # f1 the next time anything sorted by position, instead of
+      # landing after both existing siblings.
+      f3 = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 3"})
+
+      assert positions_by_uuid(location.uuid)[f3.uuid] == 2
+    end
+  end
+
   describe "create_space/2 — same-Location parent invariant" do
     test "rejects a parent that lives in a different Location" do
       loc1 = create_location(%{name: "Location 1"})

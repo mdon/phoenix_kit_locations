@@ -137,6 +137,15 @@ defmodule PhoenixKitLocations.Spaces do
   @doc """
   Creates a new space. Rejects parents that live in a different
   Location with `{:error, :parent_in_other_location}`.
+
+  When `attrs` doesn't include an explicit `position`, the new space
+  is appended to the end of its `(location_uuid, parent_uuid)` sibling
+  group — `max(position) + 1`, or `0` for the first child. Without
+  this, every space created through the "Add space" form (which never
+  sends `position`) would sit at the schema default of `0` and jump to
+  the *front* of its siblings the next time anything reorders that
+  group. An explicit `position` in `attrs` — used throughout the test
+  suite to pre-seed sibling order — is always honored as-is.
   """
   @spec create_space(map(), opts) ::
           {:ok, Space.t()}
@@ -148,7 +157,7 @@ defmodule PhoenixKitLocations.Spaces do
   def create_space(attrs, opts \\ []) do
     with :ok <- validate_parent_location(attrs) do
       %Space{}
-      |> Space.changeset(attrs)
+      |> Space.changeset(maybe_put_next_position(attrs))
       |> repo().insert()
       |> log_activity("space.created", "location_space", opts, &space_metadata/1)
     end
@@ -245,6 +254,70 @@ defmodule PhoenixKitLocations.Spaces do
         s.uuid == ^uuid and s.location_uuid == ^location_uuid and
           s.parent_uuid == ^parent_uuid
     )
+  end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Internals — sibling position (create_space/2 auto-append)
+  # ═══════════════════════════════════════════════════════════════════
+
+  # Appends the next-in-group `position` to `attrs` when the caller
+  # didn't supply one explicitly — see `create_space/2`'s doc. Written
+  # back using whichever key shape (`String.t()` vs `atom()`) `attrs`
+  # already uses, so `Space.changeset/2`'s `cast/3` never sees a
+  # mixed-key map (Ecto raises `ArgumentError` on that combination).
+  defp maybe_put_next_position(attrs) do
+    if has_position?(attrs) do
+      attrs
+    else
+      location_uuid = fetch_attr(attrs, :location_uuid)
+      parent_uuid = blank_to_nil(fetch_attr(attrs, :parent_uuid))
+      put_attr(attrs, :position, next_position(location_uuid, parent_uuid))
+    end
+  end
+
+  defp has_position?(attrs), do: fetch_attr(attrs, :position) not in [nil, ""]
+
+  defp blank_to_nil(nil), do: nil
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
+
+  defp put_attr(attrs, key, value) do
+    if Enum.any?(Map.keys(attrs), &is_binary/1),
+      do: Map.put(attrs, Atom.to_string(key), value),
+      else: Map.put(attrs, key, value)
+  end
+
+  # `location_uuid` missing (or invalid) is left for the changeset's
+  # `assoc_constraint(:location)` — or `validate_parent_location/1`,
+  # already run before this is called — to reject. `0` here is a
+  # harmless placeholder that never reaches the DB in that case.
+  #
+  # Read-then-write, not a single atomic SQL expression or row lock —
+  # matches this module's existing tolerance for a low-concurrency
+  # race elsewhere (see the moduledoc on the same-Location invariant
+  # and cycle prevention: guarded at the context boundary, not against
+  # concurrent writers). A lost race here would produce a duplicate
+  # `position` among siblings — a cosmetic ordering hiccup that
+  # self-heals on the next manual reorder, not a data-integrity
+  # problem.
+  defp next_position(nil, _parent_uuid), do: 0
+
+  defp next_position(location_uuid, parent_uuid) do
+    location_uuid
+    |> sibling_group_query(parent_uuid)
+    |> repo().aggregate(:max, :position)
+    |> case do
+      nil -> 0
+      max -> max + 1
+    end
+  end
+
+  defp sibling_group_query(location_uuid, nil) do
+    from(s in Space, where: s.location_uuid == ^location_uuid and is_nil(s.parent_uuid))
+  end
+
+  defp sibling_group_query(location_uuid, parent_uuid) do
+    from(s in Space, where: s.location_uuid == ^location_uuid and s.parent_uuid == ^parent_uuid)
   end
 
   # ═══════════════════════════════════════════════════════════════════
