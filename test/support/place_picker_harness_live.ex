@@ -25,7 +25,12 @@ defmodule PhoenixKitLocations.Web.PlacePickerHarnessLive do
 
   @impl true
   def mount(params, _session, socket) do
-    {:ok, assign(socket, place: nil, location_type_uuid: params["location_type_uuid"])}
+    {:ok,
+     assign(socket,
+       place: nil,
+       location_type_uuid: params["location_type_uuid"],
+       selected_space_uuid: params["selected_space_uuid"]
+     )}
   end
 
   @impl true
@@ -41,6 +46,7 @@ defmodule PhoenixKitLocations.Web.PlacePickerHarnessLive do
         module={PlacePicker}
         id="harness-picker"
         location_type_uuid={@location_type_uuid}
+        selected_space_uuid={@selected_space_uuid}
       />
 
       <div :if={@place} id="selected-place">

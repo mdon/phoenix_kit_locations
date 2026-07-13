@@ -19,9 +19,17 @@ defmodule PhoenixKitLocations.Web.Components.PlacePickerTest do
   alias PhoenixKitLocations.Spaces
 
   defp harness_path(opts \\ []) do
-    case Keyword.get(opts, :location_type_uuid) do
-      nil -> "/en/admin/locations/__test__/place-picker"
-      uuid -> "/en/admin/locations/__test__/place-picker?location_type_uuid=#{uuid}"
+    base = "/en/admin/locations/__test__/place-picker"
+
+    params =
+      opts
+      |> Keyword.take([:location_type_uuid, :selected_space_uuid])
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Enum.map(fn {k, v} -> "#{k}=#{v}" end)
+
+    case params do
+      [] -> base
+      _ -> "#{base}?#{Enum.join(params, "&")}"
     end
   end
 
@@ -198,6 +206,57 @@ defmodule PhoenixKitLocations.Web.Components.PlacePickerTest do
       assert has_element?(view, "#selected-place")
       assert view |> element("#selected-location-uuid") |> render() =~ location.uuid
       assert view |> element("#selected-space-uuid") |> render() =~ "none"
+    end
+  end
+
+  describe "update/2 seed-once behavior" do
+    test "local selection highlight survives a parent re-render triggered by place_picker_select",
+         %{conn: conn} do
+      location = fixture_location(%{name: "Central Warehouse"})
+      floor_a = fixture_space(location.uuid, %{"kind" => "floor", "name" => "Floor A"})
+      _floor_b = fixture_space(location.uuid, %{"kind" => "floor", "name" => "Floor B"})
+
+      # Harness passes selected_space_uuid={nil} (default from params) to the
+      # picker. After the user selects Floor A, the harness re-renders (it
+      # receives {:place_picker_select, ...}) and update/2 fires again with
+      # selected_space_uuid: nil from the parent attrs. Without the seed-once
+      # guard, that would reset the highlight to nil; with the fix, Floor A
+      # stays highlighted.
+      {:ok, view, _html} = live(conn, harness_path())
+      search(view, "Central")
+      select_location_option(view, location)
+
+      # User picks Floor A — triggers send_selection, which sends
+      # {:place_picker_select, ...} to the harness, causing a parent re-render
+      # and a second call to update/2 with the parent's seed attrs.
+      view
+      |> element(~s([phx-click="select_space"][phx-value-uuid="#{floor_a.uuid}"]))
+      |> render_click()
+
+      rendered = render(view)
+
+      # Floor A's selection was reported to the harness
+      assert rendered =~ floor_a.uuid
+
+      # The picker's tree still shows Floor A as highlighted (bg-primary/10)
+      # — the local selected_space_uuid was NOT reset to nil by the re-render.
+      assert rendered =~ "bg-primary/10"
+    end
+
+    test "seed selected_space_uuid is honoured on initial mount", %{conn: conn} do
+      location = fixture_location(%{name: "Central Warehouse"})
+      floor = fixture_space(location.uuid, %{"kind" => "floor", "name" => "Floor Seed"})
+
+      # Mount with a pre-seeded selected_space_uuid and select the matching
+      # location so the tree renders.
+      {:ok, view, _html} = live(conn, harness_path(selected_space_uuid: floor.uuid))
+      search(view, "Central")
+      select_location_option(view, location)
+
+      rendered = render(view)
+
+      # The seed highlight is visible in the tree.
+      assert rendered =~ "bg-primary/10"
     end
   end
 end

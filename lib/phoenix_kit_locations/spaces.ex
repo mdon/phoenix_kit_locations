@@ -22,9 +22,15 @@ defmodule PhoenixKitLocations.Spaces do
   ## Activity logging
 
   Mutating functions accept `opts \\ []` and forward `:actor_uuid`
-  for the activity log. Same wrapper shape as `Locations` —
-  guarded with `Code.ensure_loaded?(PhoenixKit.Activity)` and rescued
-  so logging never crashes the mutation.
+  for the activity log. Guarded with `Code.ensure_loaded?(PhoenixKit.Activity)` and
+  rescued so logging never crashes the mutation.
+
+  Parity with `Locations`:
+  - `{:ok, space}` — logs with space metadata, same as `Locations`.
+  - `{:error, %Ecto.Changeset{}}` — logs a `db_pending: true` audit row, same as `Locations`.
+  - `{:error, atom}` (`:cycle`, `:parent_in_other_location`, `:parent_not_found`,
+    `:location_not_found`) — **not logged**: these rejections carry no changeset or
+    resource UUID to attach to, so no partial audit row is written.
   """
 
   import Ecto.Query, warn: false
@@ -531,9 +537,14 @@ defmodule PhoenixKitLocations.Spaces do
   # (e.g. bulk/AI translation) that stores field names as-is. Mirrors
   # `PhoenixKitCatalogue.Web.Components.ItemPicker.translated_name/2`
   # exactly.
-  defp translated_name(%{name: name}, nil), do: name
+  #
+  # Public (not part of the documented API — `@doc false`) so that
+  # `LocationStructureLive` can reuse this resolver for the breadcrumb
+  # trail without duplicating the `_name`/`name` fallback chain.
+  @doc false
+  def translated_name(%{name: name}, nil), do: name
 
-  defp translated_name(%{data: data, name: name}, locale) do
+  def translated_name(%{data: data, name: name}, locale) do
     translation = Multilang.get_language_data(data, locale)
     Map.get(translation, "_name") || Map.get(translation, "name") || name
   end
@@ -549,15 +560,38 @@ defmodule PhoenixKitLocations.Spaces do
   end
 
   defp log_activity(
-         {:error, %Ecto.Changeset{}} = err,
-         _action,
-         _resource_type,
-         _opts,
+         {:error, %Ecto.Changeset{} = changeset} = err,
+         action,
+         resource_type,
+         opts,
          _metadata_fun
-       ),
-       do: err
+       ) do
+    maybe_log_activity(
+      action,
+      resource_type,
+      changeset_resource_uuid(changeset),
+      opts,
+      changeset_error_metadata(changeset)
+    )
+
+    err
+  end
 
   defp log_activity({:error, _} = err, _action, _resource_type, _opts, _metadata_fun), do: err
+
+  # On {:error, changeset} the space may not have a UUID yet (insert
+  # failed) — fall back to the changeset's data UUID, which exists
+  # for updates and is `nil` for inserts.
+  defp changeset_resource_uuid(%Ecto.Changeset{data: data}), do: Map.get(data, :uuid)
+
+  # PII-safe changeset metadata: invalid field names + a db_pending marker.
+  # Never includes the rejected values themselves.
+  defp changeset_error_metadata(%Ecto.Changeset{errors: errors}) do
+    %{
+      "db_pending" => true,
+      "error_fields" => errors |> Enum.map(fn {field, _} -> to_string(field) end) |> Enum.uniq()
+    }
+  end
 
   defp maybe_log_activity(action, resource_type, resource_uuid, opts, metadata) do
     if Code.ensure_loaded?(PhoenixKit.Activity) do

@@ -419,7 +419,7 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
           <div class="card-body gap-4">
             <div class="flex flex-col gap-1">
               <p class="text-xs text-base-content/50 truncate">
-                {breadcrumb(@location, @tree, @selected_uuid)}
+                {breadcrumb(@location, @tree, @selected_uuid, @current_lang)}
               </p>
               <h2 class="text-base font-semibold text-base-content/80 flex items-center gap-2">
                 <.icon name={Space.kind_icon(@selected_space.kind)} class="w-4 h-4" />
@@ -723,18 +723,23 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
   end
 
   # "Location name / Floor 1 / Zone A / Shelf 3" — the location plus
-  # the selected node's ancestor chain, root-first.
-  defp breadcrumb(location, tree, uuid) do
-    Enum.join([location.name | ancestor_chain(tree, uuid)], " / ")
+  # the selected node's ancestor chain, root-first. Uses
+  # `Spaces.translated_name/2` so each segment respects the active
+  # locale (same `_name`/`name` fallback chain as `Spaces.full_path/2`).
+  defp breadcrumb(location, tree, uuid, locale) do
+    Enum.join(
+      [Spaces.translated_name(location, locale) | ancestor_chain(tree, uuid, locale)],
+      " / "
+    )
   end
 
-  # Names of every node from the root ancestor down to (and
+  # Translated names of every node from the root ancestor down to (and
   # including) `uuid`, found by walking the already-loaded `:tree` —
   # no extra DB query. `[]` if `uuid` isn't in the tree.
-  defp ancestor_chain(tree, uuid) do
+  defp ancestor_chain(tree, uuid, locale) do
     case find_path(tree, uuid) do
       nil -> []
-      path -> Enum.map(path, & &1.name)
+      path -> Enum.map(path, &Spaces.translated_name(&1, locale))
     end
   end
 

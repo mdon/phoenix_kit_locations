@@ -38,15 +38,17 @@ defmodule PhoenixKitLocations.Web.Components.PlacePicker do
       doesn't resolve type names itself, keeping its own API small.
       `nil` (default) searches every active Location.
     * `:selected_location_uuid`, `:selected_space_uuid` — optional,
-      default `nil`. `:selected_space_uuid` seeds the tree's initial
-      highlight (`space_tree/1`'s `selected_uuid`); from then on this
-      component keeps it in sync itself as the user picks a node (and
-      clears it back to `nil` on `select_location`/`clear_location`/
-      "Use this location") — a consumer doesn't need to echo the attr
-      back just to see the highlight update. `:selected_location_uuid`
-      is accepted for symmetry but not currently consumed — the
-      Location half is always driven by the search-combobox in this
-      version.
+      default `nil`. `:selected_space_uuid` seeds the tree's **initial**
+      highlight (`space_tree/1`'s `selected_uuid`). The component's
+      `update/2` applies these attrs only on first mount (seed-once
+      semantics); from then on it tracks selection locally as the user
+      picks nodes (clearing back to `nil` on `select_location` /
+      `clear_location` / "Use this location"). A consumer can pass a
+      static `selected_space_uuid` without having to echo every local
+      update back — the seed is honored once and then the component
+      manages the highlight itself. `:selected_location_uuid` is
+      accepted for symmetry but not currently consumed — the Location
+      half is always driven by the search-combobox in this version.
     * `:locale` — when given, Location names (search results and the
       selected-location heading) show the translated name, same
       `_name`/`name` fallback chain as `Spaces.full_path/2`. `nil`
@@ -90,8 +92,34 @@ defmodule PhoenixKitLocations.Web.Components.PlacePicker do
        location_type_uuid: nil,
        selected_location_uuid: nil,
        selected_space_uuid: nil,
-       locale: nil
+       locale: nil,
+       initialized?: false
      )}
+  end
+
+  # Seed-once update: apply `selected_space_uuid`/`selected_location_uuid`
+  # from parent attrs only on the first call (right after mount). On every
+  # subsequent parent re-render, only non-seed attrs are updated so local
+  # selection state set by `select_space`/`send_selection` is never clobbered.
+  @impl true
+  def update(assigns, socket) do
+    socket =
+      socket
+      |> assign(:id, assigns.id)
+      |> assign(:location_type_uuid, Map.get(assigns, :location_type_uuid))
+      |> assign(:locale, Map.get(assigns, :locale))
+
+    socket =
+      if socket.assigns.initialized? do
+        socket
+      else
+        socket
+        |> assign(:selected_space_uuid, Map.get(assigns, :selected_space_uuid))
+        |> assign(:selected_location_uuid, Map.get(assigns, :selected_location_uuid))
+        |> assign(:initialized?, true)
+      end
+
+    {:ok, socket}
   end
 
   # ─────────────────────────────────────────────────────────────────
@@ -166,7 +194,11 @@ defmodule PhoenixKitLocations.Web.Components.PlacePicker do
   end
 
   def handle_event("select_space", %{"uuid" => uuid}, socket) do
-    {:noreply, send_selection(socket, uuid)}
+    if space_in_tree?(socket.assigns.tree, uuid) do
+      {:noreply, send_selection(socket, uuid)}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_event("select_location_only", _params, socket) do
@@ -200,6 +232,17 @@ defmodule PhoenixKitLocations.Web.Components.PlacePicker do
   # ─────────────────────────────────────────────────────────────────
   # Selection messaging
   # ─────────────────────────────────────────────────────────────────
+
+  # Returns true when `uuid` is found anywhere in the nested tree list.
+  # The tree is already scoped to `selected_location`, so any UUID found
+  # here belongs to the current location — guards `select_space` against
+  # stale / forged event payloads.
+  defp space_in_tree?([], _uuid), do: false
+  defp space_in_tree?([%{uuid: uuid} | _], uuid), do: true
+
+  defp space_in_tree?([node | rest], uuid) do
+    space_in_tree?(node.children, uuid) or space_in_tree?(rest, uuid)
+  end
 
   # Notifies the parent and mirrors the pick into local state so the
   # tree's highlight (`selected_uuid={@selected_space_uuid}`) updates
