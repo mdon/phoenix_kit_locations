@@ -152,12 +152,25 @@ defmodule PhoenixKitLocations.Web.Components.PlacePicker do
         {:noreply, socket}
 
       %Location{} = location ->
+        tree = Spaces.list_tree(location.uuid)
+
+        # Preserve a seeded `selected_space_uuid` when the newly-picked
+        # Location is the one it belongs to (the seed's whole purpose —
+        # see the moduledoc and `update/2`) instead of always clearing
+        # it. Any other UUID (stale local selection from a previously
+        # browsed Location) can't be in this Location's tree and is
+        # correctly dropped.
+        selected_space_uuid =
+          if space_in_tree?(tree, socket.assigns.selected_space_uuid),
+            do: socket.assigns.selected_space_uuid,
+            else: nil
+
         {:noreply,
          socket
          |> assign(:selected_location, location)
-         |> assign(:tree, Spaces.list_tree(location.uuid))
+         |> assign(:tree, tree)
          |> assign(:expanded, MapSet.new())
-         |> assign(:selected_space_uuid, nil)
+         |> assign(:selected_space_uuid, selected_space_uuid)
          |> assign(:open, false)
          |> assign(:query, "")
          |> assign(:matches, [])}
