@@ -20,6 +20,9 @@ defmodule PhoenixKitLocations.Paths do
   @spec location_edit(String.t()) :: String.t()
   def location_edit(uuid), do: Routes.path("#{@base}/#{uuid}/edit")
 
+  @spec location_structure(String.t()) :: String.t()
+  def location_structure(uuid), do: Routes.path("#{@base}/#{uuid}/structure")
+
   # ── Types ─────────────────────────────────────────────────────────
 
   @spec types() :: String.t()

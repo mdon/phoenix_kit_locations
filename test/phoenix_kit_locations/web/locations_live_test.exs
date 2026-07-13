@@ -2,6 +2,7 @@ defmodule PhoenixKitLocations.Web.LocationsLiveTest do
   use PhoenixKitLocations.LiveCase
 
   alias PhoenixKitLocations.Locations
+  alias PhoenixKitLocations.Paths
   alias PhoenixKitLocations.Test.Repo, as: TestRepo
 
   describe "index tab" do
@@ -21,6 +22,18 @@ defmodule PhoenixKitLocations.Web.LocationsLiveTest do
     test "renders a New Location link", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/en/admin/locations/")
       assert has_element?(view, "a", "New Location")
+    end
+
+    test "row menu links to the Structure page for the location", %{conn: conn} do
+      location = fixture_location(%{name: "HasStructureLink"})
+
+      {:ok, view, _html} = live(conn, "/en/admin/locations/")
+
+      assert has_element?(
+               view,
+               ~s(a[href="#{Paths.location_structure(location.uuid)}"]),
+               "Structure"
+             )
     end
   end
 

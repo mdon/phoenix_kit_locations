@@ -180,6 +180,18 @@ defmodule PhoenixKitLocations do
         parent: :admin_locations,
         visible: false,
         live_view: {PhoenixKitLocations.Web.LocationFormLive, :edit}
+      },
+      %Tab{
+        id: :admin_locations_structure,
+        label: "Structure",
+        icon: "hero-squares-2x2",
+        path: "locations/:uuid/structure",
+        priority: 677,
+        level: :admin,
+        permission: module_key(),
+        parent: :admin_locations,
+        visible: false,
+        live_view: {PhoenixKitLocations.Web.LocationStructureLive, :edit}
       }
     ]
   end

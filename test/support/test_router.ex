@@ -35,10 +35,15 @@ defmodule PhoenixKitLocations.Test.Router do
       # Location CRUD
       live("/new", LocationFormLive, :new)
       live("/:uuid/edit", LocationFormLive, :edit)
+      live("/:uuid/structure", LocationStructureLive, :edit)
 
       # Type CRUD
       live("/types/new", LocationTypeFormLive, :new)
       live("/types/:uuid/edit", LocationTypeFormLive, :edit)
+
+      # Test-only host for `PlacePicker` LiveComponent events — no
+      # real-UI equivalent, see `PlacePickerHarnessLive`.
+      live("/__test__/place-picker", PlacePickerHarnessLive, :index)
     end
   end
 end

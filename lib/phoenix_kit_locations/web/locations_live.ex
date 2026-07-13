@@ -307,6 +307,7 @@ defmodule PhoenixKitLocations.Web.LocationsLive do
             <.table_default_cell class="text-right whitespace-nowrap">
               <.table_row_menu mode="dropdown" id={"loc-menu-#{location.uuid}"}>
                 <.table_row_menu_link navigate={Paths.location_edit(location.uuid)} icon="hero-pencil" label={gettext("Edit")} />
+                <.table_row_menu_link navigate={Paths.location_structure(location.uuid)} icon="hero-squares-2x2" label={gettext("Structure")} />
                 <.table_row_menu_divider />
                 <.table_row_menu_button phx-click="show_delete_confirm" phx-value-uuid={location.uuid} phx-value-type="location" icon="hero-trash" label={gettext("Delete")} variant="error" />
               </.table_row_menu>
