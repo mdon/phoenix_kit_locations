@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 - 2026-07-13
+
+### Added
+- **Space kinds extended** from `floor/room` to `floor/room/zone/section/aisle/shelf` (app-layer list; the core V122 CHECK constraint already allowed them), with localized labels/icons via the module's own gettext backend (en/et/ru).
+- **Structure tab** (`LocationStructureLive`) — an N-deep Space tree UI (`SpaceTree`, modeled on core's `FolderExplorer`) replacing the old two-level staged floor/room draft flow. Immediate-commit CRUD (create/rename/reorder/delete) with activity logging; delete opens a confirmation modal reporting the true descendant count (`Spaces.count_descendants/1`, a recursive CTE) since a hard delete CASCADEs the whole subtree. Each Space gets its own Files + Featured Image card via the existing multi-resource Attachments pattern, and its own multilang name/description.
+- **`Spaces.full_path/2`** — locale-aware breadcrumb ("Location / Floor / Zone / Shelf") via a cycle-safe recursive CTE.
+- **`PlacePicker`** — a LiveComponent combining a Location search-combobox with the Space tree in read-only picker mode, for consumers (e.g. `phoenix_kit_manufacturing`) that need to pick a Location and optionally a Space in one widget. Sends `{:place_picker_select, id, %{location_uuid, space_uuid}}`.
+- Auto-positioning of new spaces (`Spaces.create_space/2` appends to the end of its sibling group when no `position` is given).
+
+### Fixed
+- `PlacePicker`'s `select_location` handler unconditionally reset the local `selected_space_uuid` to `nil`, which clobbered a consumer-seeded selection the moment the matching Location was picked — defeating the component's own "seed-once" contract (and its test) for the one case it exists to cover. Now the seed is kept when it's present in the newly-loaded tree.
+- `lib/phoenix_kit_locations.ex`'s `version/0` had drifted to `"0.1.1"` (stale since before 0.2.0) while `mix.exs` and the version-compliance test only checked consistency with each other, not against it. All three now agree.
+
 ## 0.2.1 - 2026-06-08
 
 ### Added
