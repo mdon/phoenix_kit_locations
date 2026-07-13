@@ -2,6 +2,7 @@ defmodule PhoenixKitLocations.Schemas.LocationTypeAssignment do
   @moduledoc "Join table for many-to-many between locations and location types."
 
   use Ecto.Schema
+  use PhoenixKit.SchemaPrefix
   import Ecto.Changeset
 
   @type t :: %__MODULE__{}

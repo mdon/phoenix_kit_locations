@@ -26,6 +26,7 @@ defmodule PhoenixKitLocations.Schemas.Space do
   """
 
   use Ecto.Schema
+  use PhoenixKit.SchemaPrefix
   import Ecto.Changeset
 
   alias PhoenixKitLocations.Schemas.Location

@@ -2,6 +2,7 @@ defmodule PhoenixKitLocations.Schemas.LocationType do
   @moduledoc "Schema for location types (e.g., Showroom, Storage, Office)."
 
   use Ecto.Schema
+  use PhoenixKit.SchemaPrefix
   import Ecto.Changeset
 
   @type t :: %__MODULE__{}

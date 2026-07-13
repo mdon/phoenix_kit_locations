@@ -79,7 +79,7 @@ defmodule PhoenixKitLocations.MixProject do
       # table entirely; 1.7.105 also introduced
       # `PhoenixKit.Migration.ensure_current/2` (consumed by
       # `test/test_helper.exs`), so 1.7.125 covers both floors.
-      pk_dep(:phoenix_kit, "~> 1.7.125"),
+      pk_dep(:phoenix_kit, "~> 1.7.189"),
       {:phoenix_live_view, "~> 1.1"},
       {:ex_doc, "~> 0.39", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
