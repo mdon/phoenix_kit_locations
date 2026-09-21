@@ -35,8 +35,6 @@ defmodule PhoenixKitLocations.Spaces do
 
   import Ecto.Query, warn: false
 
-  require Logger
-
   alias PhoenixKit.Utils.Multilang
   alias PhoenixKitLocations.Schemas.Location
   alias PhoenixKitLocations.Schemas.Space
@@ -594,31 +592,15 @@ defmodule PhoenixKitLocations.Spaces do
   end
 
   defp maybe_log_activity(action, resource_type, resource_uuid, opts, metadata) do
-    if Code.ensure_loaded?(PhoenixKit.Activity) do
-      PhoenixKit.Activity.log(%{
-        action: action,
-        module: "locations",
-        mode: Keyword.get(opts, :mode, "manual"),
-        actor_uuid: Keyword.get(opts, :actor_uuid),
-        resource_type: resource_type,
-        resource_uuid: resource_uuid,
-        metadata: metadata
-      })
-    end
+    PhoenixKit.Activity.log("locations", action,
+      mode: Keyword.get(opts, :mode, "manual"),
+      actor_uuid: Keyword.get(opts, :actor_uuid),
+      resource_type: resource_type,
+      resource_uuid: resource_uuid,
+      metadata: metadata
+    )
 
     :ok
-  rescue
-    e in Postgrex.Error ->
-      if match?(%{postgres: %{code: :undefined_table}}, e) do
-        :ok
-      else
-        Logger.warning("[Spaces] Activity log failed: #{Exception.message(e)}")
-        :ok
-      end
-
-    e ->
-      Logger.warning("[Spaces] Activity log error: #{Exception.message(e)}")
-      :ok
   end
 
   defp space_metadata(%Space{} = s) do

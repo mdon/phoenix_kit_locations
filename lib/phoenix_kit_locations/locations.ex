@@ -10,10 +10,9 @@ defmodule PhoenixKitLocations.Locations do
   ## Activity logging
 
   Every mutating function accepts `opts \\ []`. When `actor_uuid:` is
-  present in opts, the mutation is logged via `PhoenixKit.Activity.log/1`
+  present in opts, the mutation is logged via `PhoenixKit.Activity.log/3`
   under the `"locations"` module key. Logging failures never crash the
-  primary operation — the helper rescues and falls back to
-  `Logger.warning`.
+  primary operation — core logs them and returns them.
 
   ## Usage from IEx
 
@@ -676,34 +675,17 @@ defmodule PhoenixKitLocations.Locations do
 
   defp log_activity({:error, _} = err, _action, _resource_type, _opts, _metadata_fun), do: err
 
-  # Low-level: fire-and-forget log, guarded so it never crashes callers.
+  # Low-level: fire-and-forget log; core never raises, so it never crashes callers.
   defp maybe_log_activity(action, resource_type, resource_uuid, opts, metadata) do
-    if Code.ensure_loaded?(PhoenixKit.Activity) do
-      PhoenixKit.Activity.log(%{
-        action: action,
-        module: "locations",
-        mode: Keyword.get(opts, :mode, "manual"),
-        actor_uuid: Keyword.get(opts, :actor_uuid),
-        resource_type: resource_type,
-        resource_uuid: resource_uuid,
-        metadata: metadata
-      })
-    end
+    PhoenixKit.Activity.log("locations", action,
+      mode: Keyword.get(opts, :mode, "manual"),
+      actor_uuid: Keyword.get(opts, :actor_uuid),
+      resource_type: resource_type,
+      resource_uuid: resource_uuid,
+      metadata: metadata
+    )
 
     :ok
-  rescue
-    e in Postgrex.Error ->
-      # Host hasn't run core's activity migration — swallow silently.
-      if match?(%{postgres: %{code: :undefined_table}}, e) do
-        :ok
-      else
-        Logger.warning("[Locations] Activity log failed: #{Exception.message(e)}")
-        :ok
-      end
-
-    e ->
-      Logger.warning("[Locations] Activity log error: #{Exception.message(e)}")
-      :ok
   end
 
   defp struct_uuid(record, _mod), do: Map.get(record, :uuid)

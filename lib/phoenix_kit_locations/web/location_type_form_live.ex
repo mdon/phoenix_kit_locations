@@ -14,6 +14,7 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
   alias PhoenixKitLocations.Paths
   alias PhoenixKitLocations.Policy
   alias PhoenixKitLocations.Schemas.LocationType
+  alias PhoenixKitWeb.Actor
 
   @translatable_fields ["name", "description"]
   @preserve_fields %{"status" => :status}
@@ -62,7 +63,7 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
            location_type: location_type
          )
          |> assign_form(changeset)
-         |> mount_multilang()}
+         |> mount_multilang(open_on: if(action == :edit, do: :viewing_language, else: :primary))}
     end
   end
 
@@ -129,7 +130,7 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
   end
 
   defp save_location_type(socket, :new, params) do
-    case Locations.create_location_type(params, actor_opts(socket)) do
+    case Locations.create_location_type(params, Actor.opts(socket)) do
       {:ok, _location_type} ->
         {:noreply,
          socket
@@ -142,7 +143,7 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
   end
 
   defp save_location_type(socket, :edit, params) do
-    case Locations.update_location_type(socket.assigns.location_type, params, actor_opts(socket)) do
+    case Locations.update_location_type(socket.assigns.location_type, params, Actor.opts(socket)) do
       {:ok, _location_type} ->
         {:noreply,
          socket
@@ -151,13 +152,6 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
 
       {:error, changeset} ->
         {:noreply, assign_form(socket, Map.put(changeset, :action, :validate))}
-    end
-  end
-
-  defp actor_opts(socket) do
-    case socket.assigns[:phoenix_kit_current_scope] do
-      %{user: %{uuid: uuid}} -> [actor_uuid: uuid]
-      _ -> []
     end
   end
 

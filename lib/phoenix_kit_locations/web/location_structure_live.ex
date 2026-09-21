@@ -49,6 +49,7 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
   alias PhoenixKitLocations.Policy
   alias PhoenixKitLocations.Schemas.Space
   alias PhoenixKitLocations.Spaces
+  alias PhoenixKitWeb.Actor
 
   @space_translatable_fields ~w(name description)
   @space_preserve_fields %{"status" => :status, "kind" => :kind}
@@ -185,7 +186,7 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
     case Spaces.update_space(
            socket.assigns.selected_space,
            drop_admin_only_params(params, socket),
-           actor_opts(socket)
+           Actor.opts(socket)
          ) do
       {:ok, updated} ->
         {:noreply,
@@ -252,7 +253,7 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
       |> Attachments.drop_attachment_pointers()
       |> Map.merge(%{"location_uuid" => location.uuid, "parent_uuid" => parent_uuid})
 
-    case Spaces.create_space(attrs, actor_opts(socket)) do
+    case Spaces.create_space(attrs, Actor.opts(socket)) do
       {:ok, space} ->
         {:noreply,
          socket
@@ -594,13 +595,6 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
 
   # ── Internals ─────────────────────────────────────────────────────
 
-  defp actor_opts(socket) do
-    case socket.assigns[:phoenix_kit_current_scope] do
-      %{user: %{uuid: uuid}} -> [actor_uuid: uuid]
-      _ -> []
-    end
-  end
-
   # Space internal notes need `locations.manage_all`, checked against the live
   # scope like every write.
   defp drop_admin_only_params(params, socket) do
@@ -677,7 +671,7 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
   end
 
   defp submit_rename(socket, space, name) do
-    case Spaces.update_space(space, %{"name" => name}, actor_opts(socket)) do
+    case Spaces.update_space(space, %{"name" => name}, Actor.opts(socket)) do
       {:ok, updated} ->
         socket =
           socket
@@ -701,7 +695,7 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
   end
 
   defp submit_delete(socket, space) do
-    case Spaces.delete_space(space, actor_opts(socket)) do
+    case Spaces.delete_space(space, Actor.opts(socket)) do
       {:ok, _deleted} ->
         tree = Spaces.list_tree(socket.assigns.location.uuid)
         socket = assign(socket, :tree, tree)
@@ -743,7 +737,7 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
     parent_uuid = siblings |> hd() |> Map.get(:parent_uuid)
     reordered_uuids = siblings |> Enum.map(& &1.uuid) |> swap(index, target)
 
-    case Spaces.reorder_siblings(location.uuid, parent_uuid, reordered_uuids, actor_opts(socket)) do
+    case Spaces.reorder_siblings(location.uuid, parent_uuid, reordered_uuids, Actor.opts(socket)) do
       {:ok, :reordered} -> assign(socket, :tree, Spaces.list_tree(location.uuid))
       {:error, reason} -> put_flash(socket, :error, Errors.message(reason))
     end

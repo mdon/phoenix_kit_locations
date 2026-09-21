@@ -113,6 +113,7 @@ defmodule PhoenixKitLocations.Attachments do
   alias PhoenixKit.Modules.Storage.{File, FolderLink}
   alias PhoenixKit.Users.Auth, as: UsersAuth
   alias PhoenixKitLocations.Schemas.{Location, Space}
+  alias PhoenixKitWeb.Actor
 
   @upload_name :attachment_files
   @files_grid_limit 200
@@ -740,7 +741,7 @@ defmodule PhoenixKitLocations.Attachments do
 
   defp resolve_or_create_folder(socket, scope) do
     resource = state(socket, scope).resource
-    actor = current_user_uuid(socket)
+    actor = Actor.uuid(socket)
     parent_uuid = parent_folder_uuid(resource, actor)
 
     case find_resource_folder(resource, actor) do
@@ -771,7 +772,7 @@ defmodule PhoenixKitLocations.Attachments do
   end
 
   defp create_folder(socket, scope, folder_name, parent_uuid) do
-    user_uuid = current_user_uuid(socket)
+    user_uuid = Actor.uuid(socket)
 
     case Storage.create_folder(%{
            name: folder_name,
@@ -838,13 +839,6 @@ defmodule PhoenixKitLocations.Attachments do
 
   defp safe_get_file(_), do: nil
 
-  defp current_user_uuid(socket) do
-    case socket.assigns[:phoenix_kit_current_user] do
-      %{uuid: uuid} -> uuid
-      _ -> nil
-    end
-  end
-
   defp do_detach(_uuid, nil), do: :ok
 
   defp do_detach(file_uuid, folder_uuid) do
@@ -904,7 +898,7 @@ defmodule PhoenixKitLocations.Attachments do
   end
 
   defp store_upload(%{path: path}, entry, socket, folder_uuid) do
-    user_uuid = current_user_uuid(socket)
+    user_uuid = Actor.uuid(socket)
 
     if is_nil(user_uuid) do
       {:ok, {:error, :no_user}}
