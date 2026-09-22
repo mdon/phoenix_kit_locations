@@ -166,6 +166,7 @@ defmodule PhoenixKitLocations.Attachments do
   auto-upload. Progress routes to `handle_progress/3` which reads the
   active upload scope to figure out the target folder.
   """
+  @spec allow_attachment_upload(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
   def allow_attachment_upload(socket),
     do: CoreAttachments.allow(socket, @upload_name, &handle_progress/3)
 
@@ -371,18 +372,19 @@ defmodule PhoenixKitLocations.Attachments do
       {:ok, folder_uuid, socket} ->
         consume_and_store(socket, scope, entry, folder_uuid)
 
+      # Neither branch consumes the entry, so it is cancelled: left, it would
+      # sit in the list at 100% and count against the upload's limit.
       nil ->
         Logger.warning("Upload finished but no active scope set — dropping an upload")
 
         {:noreply,
-         put_flash(
-           socket,
-           :error,
-           gettext("Upload failed: no target file area selected.")
-         )}
+         socket
+         |> cancel_upload(@upload_name, entry.ref)
+         |> put_flash(:error, gettext("Upload failed: no target file area selected."))}
 
       {:error, reason} ->
-        {:noreply, put_upload_error(socket, entry, reason)}
+        {:noreply,
+         socket |> cancel_upload(@upload_name, entry.ref) |> put_upload_error(entry, reason)}
     end
   end
 
@@ -559,6 +561,7 @@ defmodule PhoenixKitLocations.Attachments do
   defdelegate file_icon(file), to: Format
 
   @doc "Translates LiveView upload error atoms to user-facing text."
+  @spec upload_error_message(term()) :: String.t()
   defdelegate upload_error_message(reason), to: CoreAttachments, as: :error_message
 
   # ═══════════════════════════════════════════════════════════════════

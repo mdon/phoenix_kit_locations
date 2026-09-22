@@ -92,7 +92,8 @@ defmodule PhoenixKitLocations.Web.LocationFormUploadTest do
     assert [file] = files_named(["plan.pdf", "../../plan.pdf"])
     assert file.original_file_name == "plan.pdf"
     assert file.file_type == "document"
-    assert is_binary(file.folder_uuid)
+    # Filed in the folder the location now points at.
+    assert file.folder_uuid == Repo.reload(location).data["files_folder_uuid"]
     assert html =~ "plan.pdf"
     refute html =~ "flash-error"
 
@@ -102,6 +103,30 @@ defmodule PhoenixKitLocations.Web.LocationFormUploadTest do
              "copy.pdf is identical to plan.pdf, which is already attached — nothing was added."
 
     assert [^file] = files_named(["plan.pdf", "copy.pdf"])
+  end
+
+  test "an upload that cannot be filed says so and leaves the list", %{conn: conn} do
+    location = fixture_location()
+    {:ok, view, _html} = live(conn, "/en/admin/locations/#{location.uuid}/edit")
+
+    # No file area was chosen (the scope hook never fired).
+    file =
+      file_input(view, "#location-form", :attachment_files, [
+        %{
+          last_modified: 1_700_000_000_000,
+          name: "lost.pdf",
+          content: "x",
+          type: "application/pdf"
+        }
+      ])
+
+    capture_log(fn -> render_upload(file, "lost.pdf") end)
+    html = render(view)
+
+    assert html =~ "Upload failed: no target file area selected."
+    # Not left in the list at 100%, counting against the upload limit.
+    refute html =~ "lost.pdf"
+    assert files_named(["lost.pdf"]) == []
   end
 
   defp files_named(names),
