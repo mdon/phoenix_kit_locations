@@ -82,9 +82,12 @@ defmodule PhoenixKitLocations.Attachments do
   called as `name_for(resource, actor_uuid) :: {:ok, name} | nil` — `nil`
   falls back to the deterministic name. `find_resource_folder/2` looks a
   saved resource's folder up in that order: the host name under the
-  resolved parent, then the deterministic name under the parent, then the
-  deterministic name at the root — so folders that predate either setting
-  are still found. An unsaved resource never adopts a folder.
+  resolved parent, then the deterministic name under the parent, at the
+  root, then anywhere — so folders that predate either setting, or that
+  were moved, are still found. Only live folders count, and a stored
+  pointer to a folder trashed since is replaced on the next upload. An
+  unsaved resource never adopts a folder. The convention is core's
+  `PhoenixKit.Modules.Storage.ResourceFolders`.
 
   A host name is not unique: two locations, possibly of different owners,
   can share a name under one parent. A folder found by the host name is
@@ -98,7 +101,6 @@ defmodule PhoenixKitLocations.Attachments do
 
   require Logger
 
-  import Ecto.Query, warn: false
   import Phoenix.Component, only: [assign: 2, assign: 3]
 
   import Phoenix.LiveView,
@@ -110,7 +112,7 @@ defmodule PhoenixKitLocations.Attachments do
     ]
 
   alias PhoenixKit.Modules.Storage
-  alias PhoenixKit.Modules.Storage.{File, FolderLink}
+  alias PhoenixKit.Modules.Storage.ResourceFolders
   alias PhoenixKit.Users.Auth, as: UsersAuth
   alias PhoenixKitLocations.Schemas.{Location, Space}
   alias PhoenixKitWeb.Actor
@@ -448,21 +450,17 @@ defmodule PhoenixKitLocations.Attachments do
 
   def maybe_rename_pending_folder_for(folder_uuid, resource, actor_uuid)
       when is_binary(folder_uuid) do
-    with {:ok, deterministic} <- folder_name_for(resource),
-         %{name: @pending_prefix <> _} = folder <- Storage.get_folder(folder_uuid),
-         {:error, reason} <-
-           with_name_fallback(
-             folder_name(resource, actor_uuid),
-             deterministic,
-             &Storage.update_folder(folder, %{name: &1})
-           ) do
-      Logger.warning(
-        "Pending folder rename failed for #{inspect(resource.__struct__)} #{resource.uuid}: #{inspect(reason)}"
-      )
+    case folder_name_for(resource) do
+      {:ok, deterministic} ->
+        ResourceFolders.name_pending(
+          folder_uuid,
+          @pending_prefix,
+          folder_name(resource, actor_uuid),
+          fallback_name: deterministic
+        )
 
-      :ok
-    else
-      _ -> :ok
+      :pending ->
+        :ok
     end
   end
 
@@ -483,38 +481,16 @@ defmodule PhoenixKitLocations.Attachments do
   @doc false
   # Host-configured parent folder; `nil` = storage root (default). Contract:
   # `fun(kind, actor_uuid, subject)` (preferred) or `fun(kind, actor_uuid)`.
-  # A raising hook degrades to the root instead of crashing the page.
+  # A failing hook or a non-uuid answer degrades to the root, logged
+  # (`ResourceFolders.parent_uuid/4`), instead of crashing the page.
   def parent_folder_uuid(resource, actor_uuid) do
-    case Application.get_env(:phoenix_kit_locations, :attachments_parent_folder) do
-      {mod, fun} when is_atom(mod) and is_atom(fun) ->
-        mod
-        |> call_parent_hook(fun, resource_kind(resource), actor_uuid, resource)
-        |> normalize_folder_uuid()
-
-      _ ->
-        nil
-    end
-  rescue
-    error ->
-      Logger.warning("[Locations] attachments_parent_folder hook failed: #{inspect(error)}")
-      nil
+    ResourceFolders.parent_uuid(
+      :phoenix_kit_locations,
+      resource_kind(resource),
+      actor_uuid,
+      resource
+    )
   end
-
-  defp call_parent_hook(mod, fun, kind, actor_uuid, resource) do
-    cond do
-      Code.ensure_loaded?(mod) and function_exported?(mod, fun, 3) ->
-        apply(mod, fun, [kind, actor_uuid, resource])
-
-      Code.ensure_loaded?(mod) and function_exported?(mod, fun, 2) ->
-        apply(mod, fun, [kind, actor_uuid])
-
-      true ->
-        nil
-    end
-  end
-
-  defp normalize_folder_uuid({:ok, uuid}) when is_binary(uuid), do: uuid
-  defp normalize_folder_uuid(_), do: nil
 
   defp resource_kind(%Location{}), do: :location
   defp resource_kind(%Space{}), do: :space
@@ -534,34 +510,23 @@ defmodule PhoenixKitLocations.Attachments do
     host_folder_name(resource, actor_uuid) || deterministic_name(resource)
   end
 
-  defp host_folder_name(resource, actor_uuid) do
-    with {mod, fun} when is_atom(mod) and is_atom(fun) <-
-           Application.get_env(:phoenix_kit_locations, :attachments_folder_name),
-         true <- Code.ensure_loaded?(mod) and function_exported?(mod, fun, 2),
-         {:ok, name} when is_binary(name) and name != "" <-
-           apply(mod, fun, [resource, actor_uuid]) do
-      name
-    else
-      _ -> nil
-    end
-  rescue
-    error ->
-      Logger.warning("[Locations] attachments_folder_name hook failed: #{inspect(error)}")
-      nil
-  end
+  defp host_folder_name(resource, actor_uuid),
+    do: ResourceFolders.host_name(:phoenix_kit_locations, resource, actor_uuid)
 
   @doc false
   # host name under parent (unclaimed only) → deterministic name under parent →
-  # deterministic name at root. An unsaved resource has no folder to find.
+  # at root → anywhere (the name carries the resource's uuid). Live folders
+  # only. An unsaved resource has no folder to find.
   def find_resource_folder(resource, actor_uuid) do
     case folder_name_for(resource) do
       {:ok, deterministic} ->
-        parent = parent_folder_uuid(resource, actor_uuid)
-        host_name = host_folder_name(resource, actor_uuid)
-
-        (host_name && unclaimed(find_folder_under(host_name, parent), resource)) ||
-          (parent && find_folder_under(deterministic, parent)) ||
-          find_folder_under(deterministic, nil)
+        ResourceFolders.resolve(
+          parent: parent_folder_uuid(resource, actor_uuid),
+          host_name: host_folder_name(resource, actor_uuid),
+          name: deterministic,
+          anywhere: true,
+          claimed?: &claimed_by_other?(&1, resource)
+        )
 
       :pending ->
         nil
@@ -570,66 +535,12 @@ defmodule PhoenixKitLocations.Attachments do
 
   # The host name carries no uuid, so a same-named location (possibly another
   # account's) can own the folder it matches. Adopting that folder would show
-  # and store their files on this resource; fail closed when the check errors.
-  defp unclaimed(nil, _resource), do: nil
-
-  defp unclaimed(%{uuid: folder_uuid} = folder, %{uuid: own_uuid}) do
-    repo = PhoenixKit.RepoHelper.repo()
-
-    claimed? =
-      Enum.any?([Location, Space], fn schema ->
-        from(r in schema,
-          where:
-            fragment("?->>'files_folder_uuid'", r.data) == ^folder_uuid and r.uuid != ^own_uuid
-        )
-        |> repo.exists?()
-      end)
-
-    if claimed?, do: nil, else: folder
-  rescue
-    error ->
-      Logger.warning(
-        "[Locations] folder claim check failed for #{folder_uuid}: #{inspect(error)}"
-      )
-
-      nil
-  end
-
-  # Runs `fun` with the host name; when core rejects it on `:name` (taken under
-  # the parent by a same-named resource's folder, or invalid) retries once
-  # with the uuid-bearing deterministic name, which cannot collide.
-  defp with_name_fallback(name, deterministic, fun) do
-    case fun.(name) do
-      {:error, %Ecto.Changeset{errors: errors}} = error when name != deterministic ->
-        if Keyword.has_key?(errors, :name), do: fun.(deterministic), else: error
-
-      result ->
-        result
-    end
-  end
-
-  defp find_folder_under(name, nil) do
-    from(f in PhoenixKit.Modules.Storage.Folder,
-      where: f.name == ^name and is_nil(f.parent_uuid),
-      limit: 1
-    )
-    |> PhoenixKit.RepoHelper.repo().one()
-  rescue
-    error ->
-      Logger.warning("[Locations] find_folder_under #{name} failed: #{inspect(error)}")
-      nil
-  end
-
-  defp find_folder_under(name, parent_uuid) do
-    from(f in PhoenixKit.Modules.Storage.Folder,
-      where: f.name == ^name and f.parent_uuid == ^parent_uuid,
-      limit: 1
-    )
-    |> PhoenixKit.RepoHelper.repo().one()
-  rescue
-    error ->
-      Logger.warning("[Locations] find_folder_under #{name} failed: #{inspect(error)}")
-      nil
+  # and store their files on this resource; the check fails closed.
+  defp claimed_by_other?(%{uuid: folder_uuid}, %{uuid: own_uuid}) do
+    ResourceFolders.claimed?(folder_uuid, own_uuid, [
+      {Location, {:data, "files_folder_uuid"}},
+      {Space, {:data, "files_folder_uuid"}}
+    ])
   end
 
   # ═══════════════════════════════════════════════════════════════════
@@ -732,56 +643,39 @@ defmodule PhoenixKitLocations.Attachments do
   # Internals — folder lifecycle
   # ═══════════════════════════════════════════════════════════════════
 
+  # The scope's stored folder while it is live; a folder trashed in the media
+  # browser since would take every upload out of sight, so the resource gets
+  # its folder resolved (or a new one) instead.
   defp ensure_folder(socket, scope) do
-    case state(socket, scope).folder_uuid do
-      uuid when is_binary(uuid) -> {:ok, uuid, socket}
-      _ -> resolve_or_create_folder(socket, scope)
+    case ResourceFolders.live_folder(state(socket, scope).folder_uuid) do
+      %{uuid: uuid} -> {:ok, uuid, socket}
+      nil -> resolve_or_create_folder(socket, scope)
     end
   end
 
+  # Race-safe: a create lost to a concurrent one takes the winner. A host
+  # name taken under the parent by another resource's folder (or refused)
+  # gets the uuid-bearing deterministic name instead, which cannot collide.
   defp resolve_or_create_folder(socket, scope) do
     resource = state(socket, scope).resource
     actor = Actor.uuid(socket)
     parent_uuid = parent_folder_uuid(resource, actor)
 
-    case find_resource_folder(resource, actor) do
-      %{uuid: uuid} ->
+    result =
+      case folder_name_for(resource) do
+        {:ok, deterministic} ->
+          ResourceFolders.ensure(folder_name(resource, actor), parent_uuid, actor,
+            lookup: fn -> find_resource_folder(resource, actor) end,
+            fallback_name: deterministic
+          )
+
+        :pending ->
+          ResourceFolders.ensure(@pending_prefix <> Ecto.UUID.generate(), parent_uuid, actor)
+      end
+
+    case result do
+      {:ok, %{uuid: uuid}} ->
         {:ok, uuid, update_scope(socket, scope, &Map.put(&1, :folder_uuid, uuid))}
-
-      nil ->
-        create_missing_folder(socket, scope, resource, actor, parent_uuid)
-    end
-  end
-
-  defp create_missing_folder(socket, scope, resource, actor, parent_uuid) do
-    case folder_name_for(resource) do
-      {:ok, deterministic} ->
-        with_name_fallback(
-          folder_name(resource, actor),
-          deterministic,
-          &create_folder(socket, scope, &1, parent_uuid)
-        )
-
-      :pending ->
-        create_pending_folder(socket, scope, parent_uuid)
-    end
-  end
-
-  defp create_pending_folder(socket, scope, parent_uuid) do
-    create_folder(socket, scope, @pending_prefix <> Ecto.UUID.generate(), parent_uuid)
-  end
-
-  defp create_folder(socket, scope, folder_name, parent_uuid) do
-    user_uuid = Actor.uuid(socket)
-
-    case Storage.create_folder(%{
-           name: folder_name,
-           user_uuid: user_uuid,
-           parent_uuid: parent_uuid
-         }) do
-      {:ok, folder} ->
-        socket = update_scope(socket, scope, &Map.put(&1, :folder_uuid, folder.uuid))
-        {:ok, folder.uuid, socket}
 
       {:error, reason} ->
         {:error, reason}
@@ -809,20 +703,7 @@ defmodule PhoenixKitLocations.Attachments do
   end
 
   defp list_files_in_folder(folder_uuid) do
-    linked_subq =
-      from(fl in FolderLink,
-        where: fl.folder_uuid == ^folder_uuid,
-        select: fl.file_uuid
-      )
-
-    from(f in File,
-      where:
-        (f.folder_uuid == ^folder_uuid or f.uuid in subquery(linked_subq)) and
-          f.status != "trashed",
-      order_by: [asc: f.inserted_at],
-      limit: @files_grid_limit
-    )
-    |> PhoenixKit.RepoHelper.repo().all()
+    ResourceFolders.list_files(folder_uuid, order: :oldest, limit: @files_grid_limit)
   rescue
     error ->
       Logger.warning("list_files_in_folder failed for #{folder_uuid}: #{inspect(error)}")
@@ -839,62 +720,14 @@ defmodule PhoenixKitLocations.Attachments do
 
   defp safe_get_file(_), do: nil
 
-  defp do_detach(_uuid, nil), do: :ok
-
+  # Core's removal rule (`ResourceFolders.detach/2`): a link is dropped; a
+  # file homed here moves to a live folder that also links it, or is
+  # soft-trashed when nothing else holds it. A file not here is left alone.
   defp do_detach(file_uuid, folder_uuid) do
-    case Storage.get_file(file_uuid) do
-      nil -> :ok
-      %File{folder_uuid: ^folder_uuid} = file -> detach_home(file)
-      %File{} = file -> detach_link(file.uuid, folder_uuid)
+    case ResourceFolders.detach(file_uuid, folder_uuid) do
+      {:ok, _outcome} -> :ok
+      {:error, reason} -> {:error, reason}
     end
-  end
-
-  defp detach_home(file) do
-    repo = PhoenixKit.RepoHelper.repo()
-
-    case list_links(file.uuid) do
-      [] ->
-        case soft_trash_file(file) do
-          {:ok, _} -> :ok
-          err -> err
-        end
-
-      [%FolderLink{} = link | _rest] ->
-        repo.transaction(fn ->
-          file
-          |> Ecto.Changeset.change(%{folder_uuid: link.folder_uuid})
-          |> repo.update!()
-
-          repo.delete!(link)
-        end)
-        |> case do
-          {:ok, _} -> :ok
-          err -> err
-        end
-    end
-  end
-
-  defp soft_trash_file(%File{} = file) do
-    file
-    |> Ecto.Changeset.change(%{
-      status: "trashed",
-      trashed_at: DateTime.utc_now() |> DateTime.truncate(:second)
-    })
-    |> PhoenixKit.RepoHelper.repo().update()
-  end
-
-  defp detach_link(file_uuid, folder_uuid) do
-    from(fl in FolderLink,
-      where: fl.file_uuid == ^file_uuid and fl.folder_uuid == ^folder_uuid
-    )
-    |> PhoenixKit.RepoHelper.repo().delete_all()
-
-    :ok
-  end
-
-  defp list_links(file_uuid) do
-    from(fl in FolderLink, where: fl.file_uuid == ^file_uuid)
-    |> PhoenixKit.RepoHelper.repo().all()
   end
 
   defp store_upload(%{path: path}, entry, socket, folder_uuid) do
@@ -907,44 +740,21 @@ defmodule PhoenixKitLocations.Attachments do
       ext = entry.client_name |> Path.extname() |> String.trim_leading(".") |> String.downcase()
       file_type = file_type_from_mime(entry.client_type)
 
-      case Storage.store_file_in_buckets(
-             path,
-             file_type,
-             user_uuid,
-             file_checksum,
-             ext,
-             entry.client_name
-           ) do
-        {:ok, file} ->
-          _ = assign_file_to_folder(file, folder_uuid)
-          {:ok, {:ok, file}}
-
-        {:ok, file, :duplicate} ->
-          _ = assign_file_to_folder(file, folder_uuid)
-          {:ok, {:ok, file}}
-
-        {:error, reason} ->
-          {:ok, {:error, reason}}
+      path
+      |> Storage.store_file_in_buckets(
+        file_type,
+        user_uuid,
+        file_checksum,
+        ext,
+        entry.client_name
+      )
+      |> ResourceFolders.place_stored(folder_uuid)
+      |> case do
+        {:ok, file} -> {:ok, {:ok, file}}
+        {:already_attached, file} -> {:ok, {:ok, file}}
+        {:error, reason} -> {:ok, {:error, reason}}
       end
     end
-  end
-
-  defp assign_file_to_folder(%{folder_uuid: current}, folder_uuid) when current == folder_uuid,
-    do: :ok
-
-  defp assign_file_to_folder(%File{folder_uuid: nil} = file, folder_uuid) do
-    file
-    |> Ecto.Changeset.change(%{folder_uuid: folder_uuid})
-    |> PhoenixKit.RepoHelper.repo().update()
-  end
-
-  defp assign_file_to_folder(%File{uuid: file_uuid}, folder_uuid) when is_binary(folder_uuid) do
-    %FolderLink{}
-    |> FolderLink.changeset(%{folder_uuid: folder_uuid, file_uuid: file_uuid})
-    |> PhoenixKit.RepoHelper.repo().insert(
-      on_conflict: :nothing,
-      conflict_target: [:folder_uuid, :file_uuid]
-    )
   end
 
   defp put_upload_error(socket, entry, reason) do
