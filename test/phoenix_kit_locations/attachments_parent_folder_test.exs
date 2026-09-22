@@ -236,4 +236,22 @@ defmodule PhoenixKitLocations.AttachmentsParentFolderTest do
     refute folder_uuid == trashed.uuid
     assert Repo.get!(Folder, folder_uuid).name == "location-#{loc.uuid}"
   end
+
+  test "opening the picker records the folder as the location's at once, before any Save",
+       %{locations: l} do
+    hooks_on()
+    first = owned_location("Warehouse", nil)
+    second = owned_location("Warehouse", nil)
+
+    {:noreply, socket} = Attachments.open_featured_image_picker(socket_for(first), "location")
+    folder_uuid = Attachments.state(socket, "location").folder_uuid
+    assert Repo.get!(Folder, folder_uuid).name == "Warehouse"
+    assert Repo.get!(Location, first.uuid).data["files_folder_uuid"] == folder_uuid
+
+    {:noreply, other} = Attachments.open_featured_image_picker(socket_for(second), "location")
+    other_uuid = Attachments.state(other, "location").folder_uuid
+    refute other_uuid == folder_uuid
+    assert %{name: "location-" <> _, parent_uuid: parent} = Repo.get!(Folder, other_uuid)
+    assert parent == l.uuid
+  end
 end

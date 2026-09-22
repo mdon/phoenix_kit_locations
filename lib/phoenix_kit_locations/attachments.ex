@@ -656,6 +656,10 @@ defmodule PhoenixKitLocations.Attachments do
   # Race-safe: a create lost to a concurrent one takes the winner. A host
   # name taken under the parent by another resource's folder (or refused)
   # gets the uuid-bearing deterministic name instead, which cannot collide.
+  # A saved resource's pointer is written in the same locked step
+  # (`:claim`), not at the form's Save: a host name carries no uuid, so
+  # until the pointer lands a same-named resource would take the folder
+  # for its own.
   defp resolve_or_create_folder(socket, scope) do
     resource = state(socket, scope).resource
     actor = Actor.uuid(socket)
@@ -666,7 +670,8 @@ defmodule PhoenixKitLocations.Attachments do
         {:ok, deterministic} ->
           ResourceFolders.ensure(folder_name(resource, actor), parent_uuid, actor,
             lookup: fn -> find_resource_folder(resource, actor) end,
-            fallback_name: deterministic
+            fallback_name: deterministic,
+            claim: &claim_folder(resource, &1)
           )
 
         :pending ->
@@ -681,6 +686,9 @@ defmodule PhoenixKitLocations.Attachments do
         {:error, reason}
     end
   end
+
+  defp claim_folder(%schema{uuid: uuid}, folder),
+    do: ResourceFolders.write_pointer(schema, uuid, {:data, "files_folder_uuid"}, folder.uuid)
 
   # ═══════════════════════════════════════════════════════════════════
   # Internals — file list query + storage I/O
