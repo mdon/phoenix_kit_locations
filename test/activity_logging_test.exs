@@ -11,7 +11,7 @@ defmodule PhoenixKitLocations.ActivityLoggingTest do
 
   use PhoenixKitLocations.DataCase, async: true
 
-  alias PhoenixKitLocations.Locations
+  alias PhoenixKitLocations.{Locations, Spaces}
 
   @actor Ecto.UUID.generate()
 
@@ -108,6 +108,40 @@ defmodule PhoenixKitLocations.ActivityLoggingTest do
         actor_uuid: @actor,
         metadata_has: %{"name" => "DeleteMe"}
       )
+    end
+
+    # The update runs in a transaction (row lock, tree lock) and a refused
+    # changeset comes back through its rollback — still audited.
+    test "failed update logs location.updated with db_pending: true" do
+      {:ok, location} = Locations.create_location(%{name: "Kept"})
+      {:error, _cs} = Locations.update_location(location, %{name: ""}, actor_uuid: @actor)
+
+      row =
+        assert_activity_logged("location.updated",
+          resource_uuid: location.uuid,
+          actor_uuid: @actor,
+          metadata_has: %{"db_pending" => true}
+        )
+
+      assert "name" in row.metadata["error_fields"]
+    end
+
+    test "failed space update logs space.updated with db_pending: true" do
+      {:ok, location} = Locations.create_location(%{name: "Site"})
+
+      {:ok, space} =
+        Spaces.create_space(%{"location_uuid" => location.uuid, "kind" => "room", "name" => "R"})
+
+      {:error, _cs} = Spaces.update_space(space, %{"name" => ""}, actor_uuid: @actor)
+
+      row =
+        assert_activity_logged("space.updated",
+          resource_uuid: space.uuid,
+          actor_uuid: @actor,
+          metadata_has: %{"db_pending" => true}
+        )
+
+      assert "name" in row.metadata["error_fields"]
     end
 
     test "failed create logs location.created with db_pending: true" do
