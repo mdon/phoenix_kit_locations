@@ -36,6 +36,7 @@ defmodule PhoenixKitLocations.Spaces do
   import Ecto.Query, warn: false
 
   alias PhoenixKit.Utils.Multilang
+  alias PhoenixKit.Utils.TreeQuery
   alias PhoenixKitLocations.Schemas.Location
   alias PhoenixKitLocations.Schemas.Space
 
@@ -131,7 +132,7 @@ defmodule PhoenixKitLocations.Spaces do
   """
   @spec count_descendants(uuid) :: non_neg_integer()
   def count_descendants(space_uuid) when is_binary(space_uuid) do
-    space_uuid |> descendant_uuids() |> length()
+    Space |> TreeQuery.descendant_uuids(space_uuid) |> length()
   end
 
   # ═══════════════════════════════════════════════════════════════════
@@ -388,36 +389,18 @@ defmodule PhoenixKitLocations.Spaces do
   # ═══════════════════════════════════════════════════════════════════
 
   # Ancestors of `space`, ordered root → direct parent. `[]` when
-  # `space` is already a root (`parent_uuid == nil`) — skips the CTE
-  # entirely in the common case. Mirrors
-  # `PhoenixKitCatalogue.Catalogue.Tree.ancestor_uuids/1` +
-  # `ancestors_in_order/1` + `walk_up/3`: one recursive CTE walking
-  # `parent_uuid` up from `space`, `UNION` (not `UNION ALL`) so a
-  # corrupted/cyclic chain can't spin forever — Postgres drops rows
-  # already seen in the working table before the next iteration.
+  # `space` is already a root (`parent_uuid == nil`) — skips the query
+  # entirely in the common case. One recursive query
+  # (`PhoenixKit.Utils.TreeQuery`, cycle-safe) for the uuids, one read for
+  # the rows, then `walk_up/3` puts them in order.
   defp ancestors_in_order(%Space{parent_uuid: nil}), do: []
 
   defp ancestors_in_order(%Space{} = space) do
-    case ancestor_uuids(space.uuid) do
+    case TreeQuery.ancestor_uuids(Space, space.uuid) do
       [] ->
         []
 
-      raw_uuids ->
-        # The CTE's outer select in `ancestor_uuids/1` is schema-less
-        # (`select: t.uuid` off a `with_cte` fragment) — Ecto has no
-        # field type to `load/1` each row through, so it comes back as
-        # the raw 16-byte binary Postgrex decoded off the wire, not
-        # the textual form every loaded `%Space{}.uuid` carries.
-        # Re-querying `Space` with these raw values directly in
-        # `where: s.uuid in ^raw_uuids` would fail:
-        # `Ecto.Type.dump(UUIDv7, <<16 raw bytes>>)` returns `:error`
-        # (`UUIDv7.dump/1` delegates to `Ecto.UUID.dump/1`, which only
-        # accepts the 36-char textual form). Normalise to text first —
-        # same fix `PhoenixKitCatalogue.Catalogue` applies at every
-        # other call site that reuses a Tree CTE's raw-uuid output
-        # (its `load_uuid/1`).
-        uuids = Enum.map(raw_uuids, &load_uuid/1)
-
+      uuids ->
         by_uuid =
           from(s in Space, where: s.uuid in ^uuids)
           |> repo().all()
@@ -425,34 +408,6 @@ defmodule PhoenixKitLocations.Spaces do
 
         walk_up(space.parent_uuid, by_uuid, [])
     end
-  end
-
-  # Recursive CTE returning every ancestor uuid of `uuid` (raw 16-byte
-  # binaries — see `ancestors_in_order/1`), walking up the self-ref
-  # `parent_uuid` chain. Excludes `uuid` itself.
-  defp ancestor_uuids(uuid) do
-    initial =
-      from(s in Space,
-        where: s.uuid == type(^uuid, UUIDv7),
-        select: %{uuid: s.uuid, parent_uuid: s.parent_uuid}
-      )
-
-    recursion =
-      from(s in Space,
-        join: t in "space_ancestor_tree",
-        on: s.uuid == t.parent_uuid,
-        select: %{uuid: s.uuid, parent_uuid: s.parent_uuid}
-      )
-
-    cte = union(initial, ^recursion)
-
-    from(t in "space_ancestor_tree",
-      where: t.uuid != type(^uuid, UUIDv7),
-      select: t.uuid
-    )
-    |> recursive_ctes(true)
-    |> with_cte("space_ancestor_tree", as: ^cte)
-    |> repo().all()
   end
 
   # Walks `by_uuid` from `uuid` up to the root, prepending each node as
@@ -465,56 +420,6 @@ defmodule PhoenixKitLocations.Spaces do
       %Space{parent_uuid: parent_uuid} = s -> walk_up(parent_uuid, by_uuid, [s | acc])
       nil -> acc
     end
-  end
-
-  # Loads a raw 16-byte binary UUID (from the ancestor CTE) back into
-  # the textual `xxxxxxxx-xxxx-...` form so it can be used in a normal
-  # typed `Space` query. Falls back to the raw input on failure —
-  # defensive only, `ancestor_uuids/1`'s output is always a valid
-  # binary UUID in practice.
-  defp load_uuid(raw) do
-    case Ecto.UUID.load(raw) do
-      {:ok, str} -> str
-      :error -> raw
-    end
-  end
-
-  # ═══════════════════════════════════════════════════════════════════
-  # Internals — descendant counting (count_descendants/1)
-  # ═══════════════════════════════════════════════════════════════════
-
-  # Every descendant uuid of `uuid` (raw 16-byte binaries, same shape
-  # `ancestor_uuids/1` returns — `count_descendants/1` only calls
-  # `length/1` on the result, so no textual normalisation is needed
-  # here). Mirrors `ancestor_uuids/1` with the join direction reversed
-  # (`s.parent_uuid == t.uuid` walks *down* instead of `s.uuid ==
-  # t.parent_uuid` walking up) and the same `UNION` (not `UNION ALL`)
-  # cycle safety — Postgres drops rows already seen in the working
-  # table before the next iteration, so a corrupted/cyclic chain still
-  # terminates. Excludes `uuid` itself.
-  defp descendant_uuids(uuid) do
-    initial =
-      from(s in Space,
-        where: s.uuid == type(^uuid, UUIDv7),
-        select: %{uuid: s.uuid}
-      )
-
-    recursion =
-      from(s in Space,
-        join: t in "space_descendant_tree",
-        on: s.parent_uuid == t.uuid,
-        select: %{uuid: s.uuid}
-      )
-
-    cte = union(initial, ^recursion)
-
-    from(t in "space_descendant_tree",
-      where: t.uuid != type(^uuid, UUIDv7),
-      select: t.uuid
-    )
-    |> recursive_ctes(true)
-    |> with_cte("space_descendant_tree", as: ^cte)
-    |> repo().all()
   end
 
   # Resolves a translated `name` for a Location or Space (any map or
