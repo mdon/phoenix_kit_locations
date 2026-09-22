@@ -37,13 +37,12 @@ defmodule PhoenixKitLocations.Spaces do
 
   alias PhoenixKit.Utils.Multilang
   alias PhoenixKit.Utils.TreeQuery
+  alias PhoenixKitLocations.Locations
   alias PhoenixKitLocations.Schemas.Location
   alias PhoenixKitLocations.Schemas.Space
 
   @type opts :: keyword()
   @type uuid :: String.t()
-
-  @max_cycle_walk 64
 
   defp repo, do: PhoenixKit.RepoHelper.repo()
 
@@ -185,13 +184,42 @@ defmodule PhoenixKitLocations.Spaces do
     attrs = Map.put_new(attrs, "location_uuid", space.location_uuid)
 
     with :ok <- validate_parent_location(attrs),
-         :ok <-
-           validate_no_cycle(space.uuid, fetch_attr(attrs, :parent_uuid), space.location_uuid) do
-      space
-      |> Space.changeset(attrs)
-      |> repo().update()
-      |> log_activity("space.updated", "location_space", opts, &space_metadata/1)
+         {:ok, _} = result <- repo().transaction(fn -> locked_update(space, attrs) end) do
+      log_activity(result, "space.updated", "location_space", opts, &space_metadata/1)
+    else
+      {:error, %Ecto.Changeset{}} = error ->
+        log_activity(error, "space.updated", "location_space", opts, &space_metadata/1)
+
+      error ->
+        error
     end
+  end
+
+  # A re-parent takes the location's tree lock first, so its cycle check
+  # reads the chain after any other re-parent there has committed — two at
+  # once in opposite directions otherwise both passed and committed a loop.
+  # The row lock keeps the stored folder pointer a save does not name
+  # (`Locations.keep_folder_pointer/2`).
+  defp locked_update(space, attrs) do
+    parent = fetch_attr(attrs, :parent_uuid)
+    if parent not in [nil, ""] and parent != space.parent_uuid, do: lock_tree(space.location_uuid)
+    stored = Locations.lock_row(Space, space.uuid)
+
+    with :ok <- validate_no_cycle(space.uuid, parent, space.location_uuid),
+         {:ok, updated} <-
+           space
+           |> Space.changeset(Locations.keep_folder_pointer(attrs, stored))
+           |> repo().update() do
+      updated
+    else
+      {:error, reason} -> repo().rollback(reason)
+    end
+  end
+
+  defp lock_tree(location_uuid) do
+    repo().query!("SELECT pg_advisory_xact_lock(hashtext($1))", [
+      "phoenix_kit_locations:spaces:#{location_uuid}"
+    ])
   end
 
   @doc """
@@ -365,23 +393,12 @@ defmodule PhoenixKitLocations.Spaces do
        when space_uuid == new_parent_uuid,
        do: {:error, :cycle}
 
-  defp validate_no_cycle(space_uuid, new_parent_uuid, location_uuid) do
-    walk_ancestors(space_uuid, new_parent_uuid, location_uuid, @max_cycle_walk)
-  end
-
-  defp walk_ancestors(_target, _cursor, _location, 0), do: {:error, :cycle}
-
-  defp walk_ancestors(target, cursor, location, hops_remaining) do
-    case repo().one(
-           from(s in Space,
-             where: s.uuid == ^cursor and s.location_uuid == ^location,
-             select: s.parent_uuid
-           )
-         ) do
-      nil -> :ok
-      ^target -> {:error, :cycle}
-      next -> walk_ancestors(target, next, location, hops_remaining - 1)
-    end
+  # The new parent's ancestors in one recursive query (no depth cap: the
+  # old walk stopped at 64 hops and called any deeper chain a cycle).
+  defp validate_no_cycle(space_uuid, new_parent_uuid, _location_uuid) do
+    if space_uuid in TreeQuery.ancestor_uuids(Space, new_parent_uuid),
+      do: {:error, :cycle},
+      else: :ok
   end
 
   # ═══════════════════════════════════════════════════════════════════

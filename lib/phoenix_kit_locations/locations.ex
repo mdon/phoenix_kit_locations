@@ -292,11 +292,49 @@ defmodule PhoenixKitLocations.Locations do
   @spec update_location(Location.t(), map(), opts) ::
           {:ok, Location.t()} | {:error, Ecto.Changeset.t()}
   def update_location(%Location{} = location, attrs, opts \\ []) do
-    location
-    |> Location.changeset(attrs)
-    |> repo().update()
+    repo().transaction(fn ->
+      stored = lock_row(Location, location.uuid)
+
+      location
+      |> Location.changeset(keep_folder_pointer(attrs, stored))
+      |> repo().update()
+      |> ok_or_rollback()
+    end)
     |> log_activity("location.updated", "location", opts, &location_metadata/1)
   end
+
+  @doc false
+  # A record's files folder is claimed outside its form — by
+  # `ResourceFolders.write_pointer/4`, possibly from another session after
+  # this form was opened — and the form saves `data` whole. A save whose
+  # `data` does not name a folder keeps the one stored (read under the
+  # row's lock, so a claim cannot land in between); dropping it would
+  # leave the folder unclaimed for a same-named record to adopt. A client
+  # never sets it: `Attachments.inject_attachment_data/3` has already put
+  # in or taken out the server's own.
+  @spec keep_folder_pointer(map(), map() | nil) :: map()
+  def keep_folder_pointer(attrs, %{data: %{"files_folder_uuid" => folder}})
+      when is_binary(folder) do
+    Enum.reduce(["data", :data], attrs, fn key, acc ->
+      case acc do
+        %{^key => %{} = data} when not is_map_key(data, "files_folder_uuid") ->
+          Map.put(acc, key, Map.put(data, "files_folder_uuid", folder))
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  def keep_folder_pointer(attrs, _stored), do: attrs
+
+  @doc false
+  @spec lock_row(module(), String.t()) :: struct() | nil
+  def lock_row(schema, uuid),
+    do: repo().one(from(r in schema, where: r.uuid == ^uuid, lock: "FOR UPDATE"))
+
+  defp ok_or_rollback({:ok, record}), do: record
+  defp ok_or_rollback({:error, changeset}), do: repo().rollback(changeset)
 
   @doc "Hard-deletes a location. Cascades to type assignments."
   @spec delete_location(Location.t(), opts) :: {:ok, Location.t()} | {:error, Ecto.Changeset.t()}

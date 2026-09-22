@@ -14,6 +14,7 @@ defmodule PhoenixKitLocations.SpacesTest do
   use PhoenixKitLocations.DataCase, async: true
 
   alias PhoenixKitLocations.Locations
+  alias PhoenixKitLocations.Schemas.Space
   alias PhoenixKitLocations.Spaces
 
   # ── Helpers ──────────────────────────────────────────────────────
@@ -204,6 +205,35 @@ defmodule PhoenixKitLocations.SpacesTest do
 
       # Rejected before persisting — A's parent is unchanged.
       assert Spaces.get_space(a.uuid).parent_uuid == nil
+    end
+
+    test "a chain deeper than any fixed walk is no cycle" do
+      location = create_location()
+
+      deepest =
+        Enum.reduce(1..70, nil, fn i, parent ->
+          attrs = %{"kind" => "zone", "name" => "Z#{i}"}
+          attrs = if parent, do: Map.put(attrs, "parent_uuid", parent.uuid), else: attrs
+          create_space(location.uuid, attrs)
+        end)
+
+      loose = create_space(location.uuid, %{"kind" => "room", "name" => "Loose"})
+
+      assert {:ok, moved} = Spaces.update_space(loose, %{"parent_uuid" => deepest.uuid})
+      assert moved.parent_uuid == deepest.uuid
+    end
+
+    test "a save whose data names no folder keeps the one stored since the form opened" do
+      location = create_location()
+      space = create_space(location.uuid, %{"kind" => "room", "name" => "Room"})
+      folder = Ecto.UUID.generate()
+
+      Repo.update_all(from(s in Space, where: s.uuid == ^space.uuid),
+        set: [data: %{"files_folder_uuid" => folder}]
+      )
+
+      assert {:ok, saved} = Spaces.update_space(space, %{"name" => "Renamed", "data" => %{}})
+      assert saved.data["files_folder_uuid"] == folder
     end
 
     test "allows reparenting within the same Location when no cycle would result" do
