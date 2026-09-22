@@ -73,6 +73,16 @@ defmodule PhoenixKitLocations.Web.LocationFormUploadTest do
     render(view)
   end
 
+  test "the dropzone carries the bundled scope hook", %{conn: conn} do
+    location = fixture_location()
+    {:ok, view, _html} = live(conn, "/en/admin/locations/#{location.uuid}/edit")
+
+    assert has_element?(
+             view,
+             "label[id^='pk-locations-dropzone-'][phx-hook='PhoenixKitLocationsUploadScope']"
+           )
+  end
+
   test "an upload lands in the location's folder, and a duplicate is reported", %{conn: conn} do
     location = fixture_location(%{name: "Upload HQ"})
     {:ok, view, _html} = live(conn, "/en/admin/locations/#{location.uuid}/edit")

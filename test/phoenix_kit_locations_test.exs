@@ -144,6 +144,17 @@ defmodule PhoenixKitLocationsTest do
       assert PhoenixKitLocations.css_sources() == [:phoenix_kit_locations]
     end
 
+    # A host folds this bundle in without wiring anything; a colocated hook
+    # would need the host to import it, and one that did not lost the hook.
+    test "js_sources/0 declares the bundle that defines the dropzone hook" do
+      assert [%{app: :phoenix_kit_locations, file: file, global: global}] =
+               PhoenixKitLocations.js_sources()
+
+      source = File.read!(Path.join(:code.priv_dir(:phoenix_kit_locations), file))
+      assert source =~ "window.#{global} = window.#{global} || {};"
+      assert source =~ "window.#{global}.PhoenixKitLocationsUploadScope = {"
+    end
+
     test "settings_tabs/0 returns empty list" do
       assert PhoenixKitLocations.settings_tabs() == []
     end

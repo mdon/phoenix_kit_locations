@@ -543,9 +543,8 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
               />
 
               <%!-- Files + Featured image, scoped to this Space's uuid.
-                   `PkLocationsUploadScope` (colocated with
-                   `files_card_body/1`) is already compiled into the
-                   shared JS manifest — nothing to wire here. --%>
+                   The dropzone's hook ships in the module's JS bundle
+                   (`js_sources/0`) — nothing to wire here. --%>
               <%!-- Files need `manage_all`: the media picker only confines
                    browsing to a folder once one exists. --%>
               <div :if={@manage_all} class="border-t border-base-300 pt-4 flex flex-col gap-4">
