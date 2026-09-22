@@ -197,6 +197,10 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign_space_form(socket, changeset)}
+
+      # A refused parent (another location's, a cycle, gone since).
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, Errors.message(reason))}
     end
   end
 

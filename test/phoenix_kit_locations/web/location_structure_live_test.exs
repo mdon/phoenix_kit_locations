@@ -574,6 +574,41 @@ defmodule PhoenixKitLocations.Web.LocationStructureLiveTest do
       assert updated.notes == "internal note"
     end
 
+    test "a crafted location on the form does not move the space", %{conn: conn} do
+      [location, other] = [fixture_location(), fixture_location()]
+      space = fixture_space(location.uuid, %{"kind" => "floor", "name" => "Staying"})
+
+      {:ok, view, _html} = live(conn, structure_path(location))
+      render_click(view, "select_space", %{"uuid" => space.uuid})
+
+      view
+      |> element("#space-detail-form")
+      |> render_submit(%{
+        "space" => %{"kind" => "floor", "name" => "Staying", "location_uuid" => other.uuid}
+      })
+
+      assert Spaces.get_space(space.uuid).location_uuid == location.uuid
+    end
+
+    test "a refused parent is reported, not a crash", %{conn: conn} do
+      [location, other] = [fixture_location(), fixture_location()]
+      space = fixture_space(location.uuid, %{"kind" => "floor", "name" => "Child"})
+      elsewhere = fixture_space(other.uuid, %{"kind" => "floor", "name" => "Elsewhere"})
+
+      {:ok, view, _html} = live(conn, structure_path(location))
+      render_click(view, "select_space", %{"uuid" => space.uuid})
+
+      html =
+        view
+        |> element("#space-detail-form")
+        |> render_submit(%{
+          "space" => %{"kind" => "floor", "name" => "Child", "parent_uuid" => elsewhere.uuid}
+        })
+
+      assert html =~ PhoenixKitLocations.Errors.message(:parent_in_other_location)
+      assert Spaces.get_space(space.uuid).parent_uuid == nil
+    end
+
     test "validate_space_form surfaces inline errors without persisting", %{conn: conn} do
       location = fixture_location()
       space = fixture_space(location.uuid, %{"kind" => "floor", "name" => "Original"})

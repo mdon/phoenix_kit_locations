@@ -304,20 +304,20 @@ defmodule PhoenixKitLocations.Locations do
   end
 
   @doc false
-  # A record's files folder is claimed outside its form — by
-  # `ResourceFolders.write_pointer/4`, possibly from another session after
-  # this form was opened — and the form saves `data` whole. A save whose
-  # `data` does not name a folder keeps the one stored (read under the
-  # row's lock, so a claim cannot land in between); dropping it would
-  # leave the folder unclaimed for a same-named record to adopt. A client
-  # never sets it: `Attachments.inject_attachment_data/3` has already put
-  # in or taken out the server's own.
+  # A record's files folder is claimed outside its form, and written the
+  # moment it is claimed (`ResourceFolders.write_pointer/4`) — possibly
+  # from another session after this form was opened — while the form saves
+  # `data` whole, with the pointer as it was when the form opened. So a
+  # stored pointer always wins (read under the row's lock, so a claim
+  # cannot land in between): dropping or replacing it would leave the
+  # claimed folder unclaimed, for a same-named record to adopt. Only a
+  # record with none takes the form's.
   @spec keep_folder_pointer(map(), map() | nil) :: map()
   def keep_folder_pointer(attrs, %{data: %{"files_folder_uuid" => folder}})
       when is_binary(folder) do
     Enum.reduce(["data", :data], attrs, fn key, acc ->
       case acc do
-        %{^key => %{} = data} when not is_map_key(data, "files_folder_uuid") ->
+        %{^key => %{} = data} ->
           Map.put(acc, key, Map.put(data, "files_folder_uuid", folder))
 
         _ ->

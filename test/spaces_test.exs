@@ -223,7 +223,19 @@ defmodule PhoenixKitLocations.SpacesTest do
       assert moved.parent_uuid == deepest.uuid
     end
 
-    test "a save whose data names no folder keeps the one stored since the form opened" do
+    test "an update keeps the space in its location, whatever the attrs' key shape" do
+      [location, other] = [create_location(), create_location()]
+      space = create_space(location.uuid, %{"kind" => "room", "name" => "Room"})
+
+      assert {:ok, moved} = Spaces.update_space(space, %{name: "Atom", location_uuid: other.uuid})
+      assert moved.name == "Atom"
+      assert moved.location_uuid == location.uuid
+
+      assert {:ok, moved} = Spaces.update_space(space, %{"location_uuid" => other.uuid})
+      assert moved.location_uuid == location.uuid
+    end
+
+    test "a save keeps the folder stored since the form opened" do
       location = create_location()
       space = create_space(location.uuid, %{"kind" => "room", "name" => "Room"})
       folder = Ecto.UUID.generate()
@@ -233,6 +245,10 @@ defmodule PhoenixKitLocations.SpacesTest do
       )
 
       assert {:ok, saved} = Spaces.update_space(space, %{"name" => "Renamed", "data" => %{}})
+      assert saved.data["files_folder_uuid"] == folder
+
+      stale = %{"files_folder_uuid" => Ecto.UUID.generate()}
+      assert {:ok, saved} = Spaces.update_space(space, %{"data" => stale})
       assert saved.data["files_folder_uuid"] == folder
     end
 

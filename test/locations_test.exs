@@ -182,7 +182,7 @@ defmodule PhoenixKitLocations.LocationsTest do
       assert is_nil(Locations.get_location(Ecto.UUID.generate()))
     end
 
-    test "a save whose data names no folder keeps the one stored since the form opened" do
+    test "a save keeps the folder stored since the form opened" do
       l = create_location()
       folder = Ecto.UUID.generate()
 
@@ -194,11 +194,11 @@ defmodule PhoenixKitLocations.LocationsTest do
       assert {:ok, saved} = Locations.update_location(l, %{"name" => "Renamed", "data" => %{}})
       assert saved.data["files_folder_uuid"] == folder
 
-      # A save that names one still wins.
-      other = Ecto.UUID.generate()
-      data = %{"files_folder_uuid" => other}
-      assert {:ok, saved} = Locations.update_location(saved, %{"data" => data})
-      assert saved.data["files_folder_uuid"] == other
+      # Nor does a save that names another: the form's copy is from when it
+      # opened, and every claim is written the moment it is made.
+      stale = %{"files_folder_uuid" => Ecto.UUID.generate()}
+      assert {:ok, saved} = Locations.update_location(saved, %{"data" => stale})
+      assert saved.data["files_folder_uuid"] == folder
     end
 
     test "update_location/2" do

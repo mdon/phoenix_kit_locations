@@ -16,14 +16,16 @@ defmodule PhoenixKitLocations.Spaces do
 
   Direct self-loop is caught by the schema changeset. Indirect cycles
   (A → B → A) are blocked here in `validate_no_cycle/3` before any
-  `parent_uuid` change is persisted. Walk-up depth-limited to 64 hops —
-  generous for any realistic building hierarchy.
+  `parent_uuid` change is persisted: the new parent's ancestors come from
+  one recursive query (`PhoenixKit.Utils.TreeQuery`, no depth cap), read
+  under the location's tree lock, so two re-parents in opposite
+  directions cannot both pass.
 
   ## Activity logging
 
   Mutating functions accept `opts \\ []` and forward `:actor_uuid`
-  for the activity log. Guarded with `Code.ensure_loaded?(PhoenixKit.Activity)` and
-  rescued so logging never crashes the mutation.
+  for the activity log, written through core's `PhoenixKit.Activity.log/3`,
+  which never raises — logging never crashes the mutation.
 
   Parity with `Locations`:
   - `{:ok, space}` — logs with space metadata, same as `Locations`.
@@ -181,7 +183,7 @@ defmodule PhoenixKitLocations.Spaces do
              | :location_not_found
              | :cycle}
   def update_space(%Space{} = space, attrs, opts \\ []) do
-    attrs = Map.put_new(attrs, "location_uuid", space.location_uuid)
+    attrs = own_location(attrs, space.location_uuid)
 
     with :ok <- validate_parent_location(attrs),
          {:ok, _} = result <- repo().transaction(fn -> locked_update(space, attrs) end) do
@@ -362,6 +364,17 @@ defmodule PhoenixKitLocations.Spaces do
       fetch_attr(attrs, :location_uuid),
       fetch_attr(attrs, :parent_uuid)
     )
+  end
+
+  # A space stays in its location: one sent with an update (a crafted form
+  # field) would move it out of its tree and leave its children behind.
+  # Written in the key shape `attrs` already uses — cast refuses a mix.
+  defp own_location(attrs, location_uuid) do
+    attrs = Map.drop(attrs, [:location_uuid, "location_uuid"])
+
+    if Enum.any?(Map.keys(attrs), &is_atom/1),
+      do: Map.put(attrs, :location_uuid, location_uuid),
+      else: Map.put(attrs, "location_uuid", location_uuid)
   end
 
   # `attrs` may arrive string-keyed (form params) or atom-keyed (internal

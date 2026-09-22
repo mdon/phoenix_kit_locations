@@ -58,18 +58,19 @@ context.
 
 A direct self-loop is caught by the schema changeset (`validate_no_self_parent/1`).
 Indirect cycles (A → B → A) are blocked in the context's `validate_no_cycle/3`
-before any `parent_uuid` change is persisted. The walk up the parent chain is
-depth-limited to 64 hops, generous for any realistic building hierarchy, so a
-corrupted chain cannot spin forever.
+before any `parent_uuid` change is persisted. The new parent's ancestors come
+from one recursive query (`PhoenixKit.Utils.TreeQuery`, no depth cap, safe on a
+corrupted chain), read under a per-location advisory lock taken whenever the
+parent changes — so two re-parents in opposite directions cannot both pass the
+check and commit a loop.
 
 ### Attribute key shape
 
 `attrs` may arrive string-keyed (form params) or atom-keyed (internal callers);
 the parent/cycle checks read either so they never silently skip on a key-shape
-mismatch. `update_space/3` does `Map.put_new(attrs, "location_uuid", …)`, so
-callers must pass **string-keyed** attrs: atom-keyed attrs become a mixed-key
-map and `cast/3` raises `Ecto.CastError`. `LocationStructureLive` and the test
-suite call it string-keyed throughout.
+mismatch. `update_space/3` replaces any `location_uuid` in the attrs with the
+space's own, written in the key shape the attrs already use (`cast/3` refuses a
+mixed-key map): a space never moves to another location.
 
 ## Reads
 
