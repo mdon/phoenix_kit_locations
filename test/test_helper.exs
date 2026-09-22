@@ -111,6 +111,7 @@ Application.put_env(:phoenix_kit_locations, :test_repo_available, repo_available
 # resolves the sub-permission's base key and the module-enabled check.
 # Mirrors phoenix_kit_bookings' test helper.
 {:ok, _pid} = PhoenixKit.PubSub.Manager.start_link([])
+{:ok, _pid} = Phoenix.PubSub.Supervisor.start_link(name: PhoenixKitLocations.Test.PubSub)
 {:ok, _pid} = PhoenixKit.ModuleRegistry.start_link([])
 
 # Exclude integration tests when DB is not available

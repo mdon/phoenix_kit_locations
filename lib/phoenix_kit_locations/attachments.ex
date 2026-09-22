@@ -99,13 +99,14 @@ defmodule PhoenixKitLocations.Attachments do
   logged and treated as `nil`.
   """
 
+  use Gettext, backend: PhoenixKitLocations.Gettext
+
   require Logger
 
   import Phoenix.Component, only: [assign: 2, assign: 3]
 
   import Phoenix.LiveView,
     only: [
-      allow_upload: 3,
       cancel_upload: 3,
       consume_uploaded_entry: 3,
       put_flash: 3
@@ -113,10 +114,10 @@ defmodule PhoenixKitLocations.Attachments do
 
   alias PhoenixKit.Modules.Storage
   alias PhoenixKit.Modules.Storage.ResourceFolders
-  alias PhoenixKit.Users.Auth, as: UsersAuth
   alias PhoenixKit.Utils.Format
   alias PhoenixKitLocations.Schemas.{Location, Space}
   alias PhoenixKitWeb.Actor
+  alias PhoenixKitWeb.Attachments, as: CoreAttachments
 
   @upload_name :attachment_files
   @files_grid_limit 200
@@ -165,15 +166,8 @@ defmodule PhoenixKitLocations.Attachments do
   auto-upload. Progress routes to `handle_progress/3` which reads the
   active upload scope to figure out the target folder.
   """
-  def allow_attachment_upload(socket) do
-    allow_upload(socket, @upload_name,
-      accept: :any,
-      max_entries: 20,
-      max_file_size: 100_000_000,
-      auto_upload: true,
-      progress: &handle_progress/3
-    )
-  end
+  def allow_attachment_upload(socket),
+    do: CoreAttachments.allow(socket, @upload_name, &handle_progress/3)
 
   @doc """
   Populates a single scope's state from `resource.data`. Pulls the
@@ -273,14 +267,12 @@ defmodule PhoenixKitLocations.Attachments do
          |> assign(:show_media_selector, true)}
 
       {:error, reason} ->
-        Logger.warning("Failed to ensure attachments folder for #{scope}: #{inspect(reason)}")
+        Logger.warning(
+          "Failed to ensure attachments folder for #{scope}: " <>
+            ResourceFolders.describe_failure(reason)
+        )
 
-        {:noreply,
-         put_flash(
-           socket,
-           :error,
-           Gettext.gettext(PhoenixKitWeb.Gettext, "Could not prepare the files folder.")
-         )}
+        {:noreply, put_flash(socket, :error, CoreAttachments.folder_error_message())}
     end
   end
 
@@ -339,7 +331,7 @@ defmodule PhoenixKitLocations.Attachments do
          put_flash(
            socket,
            :error,
-           Gettext.gettext(PhoenixKitWeb.Gettext, "Could not remove file.")
+           gettext("Could not remove file.")
          )}
     end
   end
@@ -380,13 +372,13 @@ defmodule PhoenixKitLocations.Attachments do
         consume_and_store(socket, scope, entry, folder_uuid)
 
       nil ->
-        Logger.warning("Upload finished but no active scope set — dropping #{entry.client_name}")
+        Logger.warning("Upload finished but no active scope set — dropping an upload")
 
         {:noreply,
          put_flash(
            socket,
            :error,
-           Gettext.gettext(PhoenixKitWeb.Gettext, "Upload failed: no target file area selected.")
+           gettext("Upload failed: no target file area selected.")
          )}
 
       {:error, reason} ->
@@ -396,8 +388,18 @@ defmodule PhoenixKitLocations.Attachments do
 
   defp consume_and_store(socket, scope, entry, folder_uuid) do
     case consume_uploaded_entry(socket, entry, &store_upload(&1, entry, socket, folder_uuid)) do
-      {:ok, _file} -> {:noreply, refresh_files(socket, scope)}
-      {:error, reason} -> {:noreply, put_upload_error(socket, entry, reason)}
+      {:ok, _file} ->
+        {:noreply, refresh_files(socket, scope)}
+
+      # Storage de-duplicates by content: nothing new appears and the file
+      # keeps the earlier upload's name, which reads as a lost file unless
+      # the uploader is told.
+      {:already_attached, existing} ->
+        notice = CoreAttachments.duplicate_notice(entry.client_name, existing)
+        {:noreply, socket |> refresh_files(scope) |> put_flash(:info, notice)}
+
+      {:error, reason} ->
+        {:noreply, put_upload_error(socket, entry, reason)}
     end
   end
 
@@ -557,17 +559,7 @@ defmodule PhoenixKitLocations.Attachments do
   defdelegate file_icon(file), to: Format
 
   @doc "Translates LiveView upload error atoms to user-facing text."
-  def upload_error_message(:too_large),
-    do: Gettext.gettext(PhoenixKitWeb.Gettext, "File is too large.")
-
-  def upload_error_message(:not_accepted),
-    do: Gettext.gettext(PhoenixKitWeb.Gettext, "File type not accepted.")
-
-  def upload_error_message(:too_many_files),
-    do: Gettext.gettext(PhoenixKitWeb.Gettext, "Too many files.")
-
-  def upload_error_message(other),
-    do: Gettext.gettext(PhoenixKitWeb.Gettext, "Upload error: %{reason}", reason: inspect(other))
+  defdelegate upload_error_message(reason), to: CoreAttachments, as: :error_message
 
   # ═══════════════════════════════════════════════════════════════════
   # Internals — per-scope state updates
@@ -614,7 +606,7 @@ defmodule PhoenixKitLocations.Attachments do
         put_flash(
           socket,
           :error,
-          Gettext.gettext(PhoenixKitWeb.Gettext, "Selected image could not be loaded.")
+          gettext("Selected image could not be loaded.")
         )
 
       file ->
@@ -686,15 +678,7 @@ defmodule PhoenixKitLocations.Attachments do
   defp compute_files_list(folder_uuid, featured_file) do
     folder_files = list_files_in_folder(folder_uuid)
 
-    case featured_file do
-      nil ->
-        folder_files
-
-      %{uuid: featured_uuid} ->
-        if Enum.any?(folder_files, &(&1.uuid == featured_uuid)),
-          do: folder_files,
-          else: [featured_file | folder_files]
-    end
+    CoreAttachments.with_featured(folder_files, featured_file)
   end
 
   defp list_files_in_folder(folder_uuid) do
@@ -725,75 +709,16 @@ defmodule PhoenixKitLocations.Attachments do
     end
   end
 
-  defp store_upload(%{path: path}, entry, socket, folder_uuid) do
-    user_uuid = Actor.uuid(socket)
-
-    if is_nil(user_uuid) do
-      {:ok, {:error, :no_user}}
-    else
-      file_checksum = UsersAuth.calculate_file_hash(path)
-      ext = entry.client_name |> Path.extname() |> String.trim_leading(".") |> String.downcase()
-      file_type = file_type_from_mime(entry.client_type)
-
-      path
-      |> Storage.store_file_in_buckets(
-        file_type,
-        user_uuid,
-        file_checksum,
-        ext,
-        entry.client_name
-      )
-      |> ResourceFolders.place_stored(folder_uuid)
-      |> case do
-        {:ok, file} -> {:ok, {:ok, file}}
-        {:already_attached, file} -> {:ok, {:ok, file}}
-        {:error, reason} -> {:ok, {:error, reason}}
-      end
-    end
-  end
+  defp store_upload(%{path: path}, entry, socket, folder_uuid),
+    do: {:ok, CoreAttachments.store(path, entry, Actor.uuid(socket), folder_uuid)}
 
   defp put_upload_error(socket, entry, reason) do
-    Logger.warning("Attachment upload failed for #{entry.client_name}: #{inspect(reason)}")
-
-    put_flash(
-      socket,
-      :error,
-      Gettext.gettext(PhoenixKitWeb.Gettext, "Upload failed for %{name}.",
-        name: entry.client_name
-      )
+    Logger.warning(
+      "Attachment upload failed for #{Path.basename(to_string(entry.client_name))}: " <>
+        ResourceFolders.describe_failure(reason)
     )
-  end
 
-  @document_mimes ~w(
-    application/pdf
-    application/msword
-    application/vnd.openxmlformats-officedocument.wordprocessingml.document
-    application/vnd.ms-excel
-    application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
-  )
-
-  defp file_type_from_mime(mime) when mime in [nil, ""], do: "other"
-
-  defp file_type_from_mime(mime) when is_binary(mime) do
-    file_type_from_prefix(mime) ||
-      file_type_from_exact(mime) ||
-      file_type_from_keyword(mime) ||
-      "other"
-  end
-
-  defp file_type_from_prefix("image/" <> _), do: "image"
-  defp file_type_from_prefix("video/" <> _), do: "video"
-  defp file_type_from_prefix("audio/" <> _), do: "audio"
-  defp file_type_from_prefix("text/" <> _), do: "document"
-  defp file_type_from_prefix(_), do: nil
-
-  defp file_type_from_exact(mime) when mime in @document_mimes, do: "document"
-  defp file_type_from_exact(_), do: nil
-
-  defp file_type_from_keyword(mime) do
-    if String.contains?(mime, "zip") or String.contains?(mime, "archive") do
-      "archive"
-    end
+    put_flash(socket, :error, CoreAttachments.failed_message(entry.client_name, reason))
   end
 
   defp inject_files_folder(params, nil) do
