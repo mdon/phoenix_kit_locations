@@ -193,6 +193,7 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
          socket
          |> assign(:tree, Spaces.list_tree(socket.assigns.location.uuid))
          |> assign(:selected_space, updated)
+         |> Attachments.put_resource(socket.assigns.selected_uuid, updated)
          |> assign_space_form(Spaces.change_space(updated))}
 
       {:error, %Ecto.Changeset{} = changeset} ->

@@ -204,7 +204,9 @@ defmodule PhoenixKitLocations.Spaces do
   # (`Locations.keep_folder_pointer/2`).
   defp locked_update(space, attrs) do
     parent = fetch_attr(attrs, :parent_uuid)
-    if parent not in [nil, ""] and parent != space.parent_uuid, do: lock_tree(space.location_uuid)
+    # Any change of parent, a move to the top level included: it closes no
+    # cycle, but it must not slip past the lock the other tree writers hold.
+    if reparenting?(space, attrs), do: lock_tree(space.location_uuid)
     stored = Locations.lock_row(Space, space.uuid)
 
     with :ok <- validate_no_cycle(space.uuid, parent, space.location_uuid),
@@ -217,6 +219,15 @@ defmodule PhoenixKitLocations.Spaces do
       {:error, reason} -> repo().rollback(reason)
     end
   end
+
+  defp reparenting?(%Space{parent_uuid: current}, attrs) do
+    if Map.has_key?(attrs, "parent_uuid") or Map.has_key?(attrs, :parent_uuid),
+      do: normalize_parent(fetch_attr(attrs, :parent_uuid)) != normalize_parent(current),
+      else: false
+  end
+
+  defp normalize_parent(parent) when parent in [nil, ""], do: nil
+  defp normalize_parent(parent), do: to_string(parent)
 
   defp lock_tree(location_uuid) do
     repo().query!("SELECT pg_advisory_xact_lock(hashtext($1))", [

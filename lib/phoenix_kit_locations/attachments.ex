@@ -5,11 +5,9 @@ defmodule PhoenixKitLocations.Attachments do
   many Files cards can live on the same page, each keyed by an
   opaque string "scope" — typically the resource's id or a draft id.
 
-  This is a re-shape of the single-resource Attachments pattern in
-  `PhoenixKitCatalogue.Attachments`. Catalogue's version stores
-  everything in top-level socket assigns (`:files_folder_uuid`,
-  `:featured_image_uuid`, …), which forces one resource per LV.
-  Here, all that state lives in a per-scope map:
+  A single-resource LiveView keeps its attachment state in top-level socket
+  assigns, which forces one resource per LV. Here, all that state lives in
+  a per-scope map:
 
       socket.assigns.attachments_by_scope = %{
         "location" => %{folder_uuid: …, featured_image_uuid: …, files: […], …},
@@ -202,6 +200,18 @@ defmodule PhoenixKitLocations.Attachments do
     }
 
     put_scope(socket, scope, state)
+  end
+
+  @doc """
+  Replaces the resource a mounted scope holds — after a save that keeps the
+  form open. The host's folder hooks read the resource when the first
+  upload resolves a folder, so a rename saved here must reach them; the
+  files and pointers are live state already and stay as they are.
+  """
+  @spec put_resource(Phoenix.LiveView.Socket.t(), term(), struct()) ::
+          Phoenix.LiveView.Socket.t()
+  def put_resource(socket, scope, resource) do
+    update_scope(socket, scope, fn st -> %{st | resource: resource} end)
   end
 
   @doc """
