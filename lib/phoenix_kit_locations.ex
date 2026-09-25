@@ -90,10 +90,9 @@ defmodule PhoenixKitLocations do
   @impl PhoenixKit.Module
   def css_sources, do: [:phoenix_kit_locations]
 
-  # No `@impl` on purpose — older core releases don't declare the
-  # `js_sources/0` callback, and annotating it would warn (and fail
-  # `--warnings-as-errors`). Core's `:phoenix_kit_js_sources` compiler folds
-  # this into the host's module JS bundle, so a host wires nothing.
+  # Core's `:phoenix_kit_js_sources` compiler folds this into the host's
+  # module JS bundle, so a host wires nothing.
+  @impl PhoenixKit.Module
   def js_sources do
     [
       %{
@@ -104,10 +103,7 @@ defmodule PhoenixKitLocations do
     ]
   end
 
-  # PhoenixKit.Module.media_reorganizer/0 (core >= 2.24.0, which ships
-  # Storage.Reorganizer). No `@impl`: the core requirement stays `~> 2.0`
-  # and older cores do not define the callback. `ModuleRegistry.all_media_reorganizers/0`
-  # calls this function by name, not through the behaviour.
+  @impl PhoenixKit.Module
   def media_reorganizer, do: PhoenixKitLocations.MediaReorganizer
 
   # Project-extension contribution to the `phoenix_kit_projects` hub — the

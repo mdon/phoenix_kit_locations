@@ -74,13 +74,17 @@ defmodule PhoenixKitLocations.MixProject do
 
   defp deps do
     [
-      # 2.0.0 squashed core's chain to the V135 baseline, which creates all
-      # four location tables (adopted by `PhoenixKitLocations.Migrations` V1)
-      # and ships `PhoenixKit.Migration.ensure_current/2` and the
-      # `migration_module/0` discovery `test/test_helper.exs` and
-      # `mix phoenix_kit.update` rely on. A V2+ that changes shape must raise
-      # this floor to the core release carrying the regenerated manifest.
-      pk_dep(:phoenix_kit, "~> 2.0"),
+      # The floor is 2.38.0: the module runs on core's shared toolkits —
+      # `PhoenixKitWeb.Actor`, `PhoenixKit.Activity.log/3`,
+      # `Storage.ResourceFolders`, the reorganizer's `ResourceSource`,
+      # `PhoenixKitWeb.Attachments`, `Utils.TreeQuery`, `Utils.Format`,
+      # `mount_multilang(open_on:)` and the `:phoenix_kit_js_sources`
+      # compiler — all first shipped there, none feature-detected, so a lower
+      # core fails to compile. (2.0.0's V135 baseline, which V1 adopts, is
+      # long subsumed.) Patch-precise floor in the compound form, so the
+      # ceiling stays open through every later 2.x minor (see
+      # test/core_pin_conformance_test.exs).
+      pk_dep(:phoenix_kit, ">= 2.38.0 and < 3.0.0"),
       {:phoenix_live_view, "~> 1.1"},
       {:ex_doc, "~> 0.39", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
