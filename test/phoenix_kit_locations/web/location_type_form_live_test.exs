@@ -4,12 +4,12 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLiveTest do
   alias PhoenixKitLocations.Locations
 
   describe "new form" do
-    test "puts Locations / Types / New in the admin header, not the body", %{conn: conn} do
+    test "puts Locations / Types / New type in the admin header, not the body", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/en/admin/locations/types/new")
 
       assert has_element?(view, ~s(#header-section[href="/en/admin/locations"]), "Locations")
       assert has_element?(view, ~s(.header-crumb[href="/en/admin/locations/types"]), "Types")
-      assert has_element?(view, "#header-title", "New")
+      assert has_element?(view, "#header-title", "New type")
       refute render(view) =~ "New Location Type"
     end
 
@@ -53,7 +53,10 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLiveTest do
 
       {:ok, view, html} = live(conn, "/en/admin/locations/types/#{type.uuid}/edit")
 
-      assert has_element?(view, "#header-title", "Original")
+      # "Locations / Types / Original / Edit" — the type crumb is text.
+      assert has_element?(view, ~s(a.header-crumb[href="/en/admin/locations/types"]), "Types")
+      assert has_element?(view, "span.header-crumb", "Original")
+      assert has_element?(view, "#header-title", "Edit")
       assert html =~ ~s(value="Original")
     end
 

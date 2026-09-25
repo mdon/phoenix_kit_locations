@@ -41,12 +41,12 @@ msgstr "Полка"
 msgid "Zone"
 msgstr "Зона"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:509
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:512
 #, elixir-autogen, elixir-format
 msgid "Active"
 msgstr "Активный"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:453
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:456
 #, elixir-autogen, elixir-format
 msgid "Add"
 msgstr "Добавить"
@@ -57,22 +57,22 @@ msgid "Add child"
 msgstr "Добавить дочерний элемент"
 
 #: lib/phoenix_kit_locations/web/components/space_tree.ex:126
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:668
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:671
 #, elixir-autogen, elixir-format
 msgid "Add root space"
 msgstr "Добавить корневое пространство"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:672
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:675
 #, elixir-autogen, elixir-format
 msgid "Add space"
 msgstr "Добавить пространство"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:673
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:676
 #, elixir-autogen, elixir-format
 msgid "Add space under %{name}"
 msgstr "Добавить пространство в %{name}"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:456
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:459
 #, elixir-autogen, elixir-format
 msgid "Cancel"
 msgstr "Отмена"
@@ -83,27 +83,27 @@ msgid "Change"
 msgstr "Изменить"
 
 #: lib/phoenix_kit_locations/web/components/space_tree.ex:290
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:593
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:596
 #, elixir-autogen, elixir-format
 msgid "Delete"
 msgstr "Удалить"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:656
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:659
 #, elixir-autogen, elixir-format
 msgid "Delete \"%{name}\" and its %{count} descendants? This cannot be undone."
 msgstr "Удалить «%{name}» и %{count} вложенных элементов? Отменить невозможно."
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:652
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:655
 #, elixir-autogen, elixir-format
 msgid "Delete \"%{name}\"? This cannot be undone."
 msgstr "Удалить «%{name}»? Отменить невозможно."
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:590
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:593
 #, elixir-autogen, elixir-format
 msgid "Delete Space"
 msgstr "Удалить пространство"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:537
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:540
 #, elixir-autogen, elixir-format
 msgid "Description"
 msgstr "Описание"
@@ -123,35 +123,35 @@ msgstr "Редактировать локацию"
 msgid "Edit Type"
 msgstr "Редактировать тип"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:719
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:722
 #, elixir-autogen, elixir-format
 msgid "Failed to delete space"
 msgstr "Не удалось удалить пространство"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:694
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:697
 #, elixir-autogen, elixir-format
 msgid "Failed to rename space"
 msgstr "Не удалось переименовать пространство"
 
 #: lib/phoenix_kit_locations/web/components/space_tree.ex:237
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:509
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:512
 #, elixir-autogen, elixir-format
 msgid "Inactive"
 msgstr "Неактивный"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:545
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:548
 #, elixir-autogen, elixir-format
 msgid "Internal notes (admin-only)"
 msgstr "Внутренние заметки (только для администраторов)"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:438
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:502
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:441
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:505
 #, elixir-autogen, elixir-format
 msgid "Kind"
 msgstr "Тип"
 
 #: lib/phoenix_kit_locations/web/location_form_live.ex:88
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:91
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:93
 #: lib/phoenix_kit_locations/web/location_type_form_live.ex:54
 #: lib/phoenix_kit_locations/web/locations_live.ex:31
 #: lib/phoenix_kit_locations/web/locations_live.ex:75
@@ -170,8 +170,8 @@ msgstr "Переместить вниз"
 msgid "Move up"
 msgstr "Переместить вверх"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:445
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:523
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:448
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:526
 #, elixir-autogen, elixir-format
 msgid "Name"
 msgstr "Название"
@@ -196,12 +196,12 @@ msgstr "Локации не найдены"
 msgid "No spaces yet."
 msgstr "Пространств пока нет."
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:561
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:564
 #, elixir-autogen, elixir-format
 msgid "Photos, layouts, anything specific to this space."
 msgstr "Фото, планы и всё, что относится именно к этому пространству."
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:562
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:565
 #, elixir-autogen, elixir-format
 msgid "Remove this file from the space?"
 msgstr "Удалить этот файл из пространства?"
@@ -211,12 +211,12 @@ msgstr "Удалить этот файл из пространства?"
 msgid "Rename"
 msgstr "Переименовать"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:573
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:576
 #, elixir-autogen, elixir-format
 msgid "Save"
 msgstr "Сохранить"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:571
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:574
 #, elixir-autogen, elixir-format
 msgid "Saving..."
 msgstr "Сохранение..."
@@ -226,22 +226,23 @@ msgstr "Сохранение..."
 msgid "Search locations…"
 msgstr "Поиск локаций…"
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:560
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:563
 #, elixir-autogen, elixir-format
 msgid "Shown for this space."
 msgstr "Отображается для этого пространства."
 
-#: lib/phoenix_kit_locations/web/location_structure_live.ex:508
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:511
 #, elixir-autogen, elixir-format
 msgid "Status"
 msgstr "Статус"
 
 #: lib/phoenix_kit_locations/web/components/location_tabs.ex:36
+#: lib/phoenix_kit_locations/web/location_structure_live.ex:92
 #, elixir-format
 msgid "Structure"
 msgstr "Структура"
 
-#: lib/phoenix_kit_locations/web/location_type_form_live.ex:58
+#: lib/phoenix_kit_locations/web/location_type_form_live.ex:84
 #: lib/phoenix_kit_locations/web/locations_live.ex:88
 #, elixir-format
 msgid "Types"
@@ -304,12 +305,6 @@ msgstr "Убрать владельца"
 msgid "Search users by email or name…"
 msgstr "Поиск пользователей по email или имени…"
 
-#: lib/phoenix_kit_locations/web/location_form_live.ex:168
-#: lib/phoenix_kit_locations/web/location_type_form_live.ex:85
-#, elixir-autogen, elixir-format
-msgid "New"
-msgstr "Создание"
-
 #: lib/phoenix_kit_locations/attachments.ex:345
 #, elixir-autogen, elixir-format
 msgid "Could not remove file."
@@ -324,3 +319,19 @@ msgstr "Выбранное изображение не удалось загру
 #, elixir-autogen, elixir-format
 msgid "Upload failed: no target file area selected."
 msgstr "Не удалось загрузить: не выбрана область для файлов."
+
+#: lib/phoenix_kit_locations/web/location_form_live.ex:172
+#: lib/phoenix_kit_locations/web/location_type_form_live.ex:81
+#, elixir-autogen, elixir-format
+msgid "Edit"
+msgstr "Редактировать"
+
+#: lib/phoenix_kit_locations/web/location_form_live.ex:171
+#, elixir-autogen, elixir-format
+msgid "New location"
+msgstr "Новая локация"
+
+#: lib/phoenix_kit_locations/web/location_type_form_live.ex:80
+#, elixir-autogen, elixir-format
+msgid "New type"
+msgstr "Новый тип"

@@ -36,13 +36,12 @@ defmodule PhoenixKitLocations.Test.Layouts do
       >
         {assigns[:page_section]}
       </.link>
-      <.link
-        :for={crumb <- assigns[:page_crumbs] || []}
-        class="header-crumb"
-        navigate={crumb[:path]}
-      >
-        {crumb.label}
-      </.link>
+      <%= for crumb <- assigns[:page_crumbs] || [] do %>
+        <.link :if={crumb[:path]} class="header-crumb" navigate={crumb[:path]}>
+          {crumb.label}
+        </.link>
+        <span :if={is_nil(crumb[:path])} class="header-crumb">{crumb.label}</span>
+      <% end %>
       <span :if={assigns[:page_title]} id="header-title">{assigns[:page_title]}</span>
       <.link
         :if={assigns[:page_action]}

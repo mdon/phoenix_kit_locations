@@ -37,7 +37,8 @@ defmodule PhoenixKitLocations.Web.LocationStructureLiveTest do
       {:ok, view, html} = live(conn, structure_path(location))
 
       assert has_element?(view, ~s(#header-section[href="#{Paths.index()}"]), "Locations")
-      assert has_element?(view, "#header-title", "Warehouse A")
+      assert has_element?(view, "span.header-crumb", "Warehouse A")
+      assert has_element?(view, "#header-title", "Structure")
       assert html =~ "Details"
       assert html =~ "Structure"
       assert has_element?(view, "a.tab-active", "Structure")

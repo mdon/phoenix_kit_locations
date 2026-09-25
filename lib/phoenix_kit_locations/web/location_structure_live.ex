@@ -87,9 +87,12 @@ defmodule PhoenixKitLocations.Web.LocationStructureLive do
            adding_parent_uuid: nil,
            new_space_form: nil,
            confirm_delete: nil,
-           page_title: location.name,
+           # "Locations / <name> / Structure" in the admin header; the
+           # location crumb is text, like on its edit page.
+           page_title: gettext("Structure"),
            page_section: gettext("Locations"),
-           page_section_path: Paths.index()
+           page_section_path: Paths.index(),
+           page_crumbs: [%{label: location.name}]
          )
          |> mount_multilang()
          |> Attachments.init()

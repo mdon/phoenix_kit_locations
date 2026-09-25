@@ -84,9 +84,10 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         {:ok,
          socket
          |> assign(
-           page_title: page_title(action, location),
+           page_title: page_title(action),
            page_section: gettext_with_backend(PhoenixKitLocations.Gettext, "Locations"),
            page_section_path: Paths.index(),
+           page_crumbs: page_crumbs(action, location),
            mode: mode,
            action: action,
            location: location,
@@ -163,10 +164,15 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       []
   end
 
-  # Rendered by the PhoenixKit admin header as "Locations / New" or
-  # "Locations / <name>"; the page body has no header of its own.
-  defp page_title(:new, _location), do: gettext_with_backend(PhoenixKitLocations.Gettext, "New")
-  defp page_title(:edit, location), do: location.name
+  # Rendered by the PhoenixKit admin header as "Locations / New location" or
+  # "Locations / <name> / Edit"; the page body has no header of its own. The
+  # location crumb is text: the list is the record's only page (the Structure
+  # tab is a sibling of this one, not the record's page).
+  defp page_title(:new), do: gettext_with_backend(PhoenixKitLocations.Gettext, "New location")
+  defp page_title(:edit), do: gettext_with_backend(PhoenixKitLocations.Gettext, "Edit")
+
+  defp page_crumbs(:new, _location), do: []
+  defp page_crumbs(:edit, location), do: [%{label: location.name}]
 
   # Keeps the `:changeset` assign (for `<.translatable_field>`) and `:form`
   # (for core `<.input>` / `<.select>` / `<.textarea>` which want a
