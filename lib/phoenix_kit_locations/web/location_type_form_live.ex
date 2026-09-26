@@ -14,6 +14,7 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
   alias PhoenixKitLocations.Paths
   alias PhoenixKitLocations.Policy
   alias PhoenixKitLocations.Schemas.LocationType
+  alias PhoenixKitWeb.Actor
 
   @translatable_fields ["name", "description"]
   @preserve_fields %{"status" => :status}
@@ -49,20 +50,15 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
         {:ok,
          socket
          |> assign(
-           page_title: page_title(action, location_type),
+           page_title: page_title(action),
            page_section: gettext_with_backend(PhoenixKitLocations.Gettext, "Locations"),
            page_section_path: Paths.index(),
-           page_crumbs: [
-             %{
-               label: gettext_with_backend(PhoenixKitLocations.Gettext, "Types"),
-               path: Paths.types()
-             }
-           ],
+           page_crumbs: page_crumbs(action, location_type),
            action: action,
            location_type: location_type
          )
          |> assign_form(changeset)
-         |> mount_multilang()}
+         |> mount_multilang(open_on: if(action == :edit, do: :viewing_language, else: :primary))}
     end
   end
 
@@ -78,12 +74,23 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
     end
   end
 
-  # Rendered by the PhoenixKit admin header as "Locations / Types / New" or
-  # "Locations / Types / <name>"; the page body has no header of its own.
-  defp page_title(:new, _location_type),
-    do: gettext_with_backend(PhoenixKitLocations.Gettext, "New")
+  # Rendered by the PhoenixKit admin header as "Locations / Types / New type"
+  # or "Locations / Types / <name> / Edit"; the page body has no header of its
+  # own. The type crumb is text: the Types list is the record's only page.
+  defp page_title(:new), do: gettext_with_backend(PhoenixKitLocations.Gettext, "New type")
+  defp page_title(:edit), do: gettext_with_backend(PhoenixKitLocations.Gettext, "Edit")
 
-  defp page_title(:edit, location_type), do: location_type.name
+  defp page_crumbs(action, location_type) do
+    types = %{
+      label: gettext_with_backend(PhoenixKitLocations.Gettext, "Types"),
+      path: Paths.types()
+    }
+
+    case action do
+      :new -> [types]
+      :edit -> [types, %{label: location_type.name}]
+    end
+  end
 
   defp assign_form(socket, %Ecto.Changeset{} = changeset) do
     assign(socket, changeset: changeset, form: to_form(changeset, as: :location_type))
@@ -129,7 +136,7 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
   end
 
   defp save_location_type(socket, :new, params) do
-    case Locations.create_location_type(params, actor_opts(socket)) do
+    case Locations.create_location_type(params, Actor.opts(socket)) do
       {:ok, _location_type} ->
         {:noreply,
          socket
@@ -142,7 +149,7 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
   end
 
   defp save_location_type(socket, :edit, params) do
-    case Locations.update_location_type(socket.assigns.location_type, params, actor_opts(socket)) do
+    case Locations.update_location_type(socket.assigns.location_type, params, Actor.opts(socket)) do
       {:ok, _location_type} ->
         {:noreply,
          socket
@@ -151,13 +158,6 @@ defmodule PhoenixKitLocations.Web.LocationTypeFormLive do
 
       {:error, changeset} ->
         {:noreply, assign_form(socket, Map.put(changeset, :action, :validate))}
-    end
-  end
-
-  defp actor_opts(socket) do
-    case socket.assigns[:phoenix_kit_current_scope] do
-      %{user: %{uuid: uuid}} -> [actor_uuid: uuid]
-      _ -> []
     end
   end
 

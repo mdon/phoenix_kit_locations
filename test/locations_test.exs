@@ -2,6 +2,7 @@ defmodule PhoenixKitLocations.LocationsTest do
   use PhoenixKitLocations.DataCase, async: true
 
   alias PhoenixKitLocations.Locations
+  alias PhoenixKitLocations.Schemas.Location, as: LocationSchema
 
   # ── Helpers ──────────────────────────────────────────────────────
 
@@ -179,6 +180,25 @@ defmodule PhoenixKitLocations.LocationsTest do
       assert found.uuid == l.uuid
       assert found.location_types == []
       assert is_nil(Locations.get_location(Ecto.UUID.generate()))
+    end
+
+    test "a save keeps the folder stored since the form opened" do
+      l = create_location()
+      folder = Ecto.UUID.generate()
+
+      # Another session claims the files folder after this form loaded `l`.
+      Repo.update_all(from(r in LocationSchema, where: r.uuid == ^l.uuid),
+        set: [data: %{"files_folder_uuid" => folder}]
+      )
+
+      assert {:ok, saved} = Locations.update_location(l, %{"name" => "Renamed", "data" => %{}})
+      assert saved.data["files_folder_uuid"] == folder
+
+      # Nor does a save that names another: the form's copy is from when it
+      # opened, and every claim is written the moment it is made.
+      stale = %{"files_folder_uuid" => Ecto.UUID.generate()}
+      assert {:ok, saved} = Locations.update_location(saved, %{"data" => stale})
+      assert saved.data["files_folder_uuid"] == folder
     end
 
     test "update_location/2" do
@@ -405,8 +425,6 @@ defmodule PhoenixKitLocations.LocationsTest do
   # ═══════════════════════════════════════════════════════════════════
   # Validation edge cases
   # ═══════════════════════════════════════════════════════════════════
-
-  alias PhoenixKitLocations.Schemas.Location, as: LocationSchema
 
   describe "changeset validations" do
     test "rejects unknown status values" do

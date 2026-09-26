@@ -1442,7 +1442,7 @@ defmodule PhoenixKitLocations.MediaReorganizerTest do
       assert dup.reason =~ copy2.uuid
     end
 
-    test "no pointer, THREE live legacy copies under three real parents; hook answers nil → :duplicate names two, the third is still reported :relocated (R6-1)" do
+    test "no pointer, THREE live legacy copies under three real parents; hook answers nil → one :duplicate names all three (R6-1)" do
       location = new_location(%{name: "Tallinn HQ"})
 
       {:ok, parent1} = Storage.create_folder(%{name: "Container one"})
@@ -1468,12 +1468,10 @@ defmodule PhoenixKitLocations.MediaReorganizerTest do
       dup = Enum.find(actions, &(&1.kind == :duplicate and &1.label == location.name))
       refute is_nil(dup)
 
-      named_in_dup = Enum.filter(copies, &(dup.reason =~ &1.uuid))
-      assert length(named_in_dup) == 2
-
-      [third] = copies -- named_in_dup
-      relocated = Enum.filter(actions, &(&1.kind == :relocated))
-      assert Enum.any?(relocated, &(&1.folder.uuid == third.uuid))
+      # None of them is where locations looks, so none can be picked: every
+      # copy is named in the one report, none left out.
+      assert Enum.all?(copies, &(dup.reason =~ &1.uuid))
+      refute Enum.any?(actions, &(&1.kind == :relocated))
     end
   end
 

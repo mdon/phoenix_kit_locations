@@ -7,9 +7,9 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
   describe "new form" do
     test "renders the New Location heading", %{conn: conn} do
       {:ok, view, html} = live(conn, "/en/admin/locations/new")
-      # Title lives in the admin header as "Locations / New".
+      # Title lives in the admin header as "Locations / New location".
       assert has_element?(view, ~s(#header-section[href="/en/admin/locations"]), "Locations")
-      assert has_element?(view, "#header-title", "New")
+      assert has_element?(view, "#header-title", "New location")
       refute html =~ "New Location"
       assert html =~ "Address"
       assert html =~ "Contact"
@@ -71,8 +71,12 @@ defmodule PhoenixKitLocations.Web.LocationFormLiveTest do
 
       {:ok, view, html} = live(conn, "/en/admin/locations/#{location.uuid}/edit")
 
+      # "Locations / Original / Edit" — the location crumb is text, the list
+      # being its only page.
       assert has_element?(view, "#header-section", "Locations")
-      assert has_element?(view, "#header-title", "Original")
+      assert has_element?(view, "span.header-crumb", "Original")
+      refute has_element?(view, "a.header-crumb")
+      assert has_element?(view, "#header-title", "Edit")
       assert html =~ "value=\"Oldtown\""
     end
 

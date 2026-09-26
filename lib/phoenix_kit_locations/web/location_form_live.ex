@@ -39,6 +39,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   alias PhoenixKitLocations.Paths
   alias PhoenixKitLocations.Policy
   alias PhoenixKitLocations.Schemas.Location
+  alias PhoenixKitWeb.Actor
 
   @attachment_events ~w(open_featured_image_picker close_media_selector cancel_upload
                         remove_file clear_featured_image set_active_upload_scope)
@@ -83,9 +84,10 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
         {:ok,
          socket
          |> assign(
-           page_title: page_title(action, location),
+           page_title: page_title(action),
            page_section: gettext_with_backend(PhoenixKitLocations.Gettext, "Locations"),
            page_section_path: Paths.index(),
+           page_crumbs: page_crumbs(action, location),
            mode: mode,
            action: action,
            location: location,
@@ -102,7 +104,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
            address_warning: nil
          )
          |> assign_form(changeset)
-         |> mount_multilang()
+         |> mount_multilang(open_on: if(action == :edit, do: :viewing_language, else: :primary))
          |> Attachments.init()
          |> maybe_allow_uploads(mode)
          |> Attachments.mount(scope: location_scope(), resource: location)}
@@ -162,10 +164,15 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       []
   end
 
-  # Rendered by the PhoenixKit admin header as "Locations / New" or
-  # "Locations / <name>"; the page body has no header of its own.
-  defp page_title(:new, _location), do: gettext_with_backend(PhoenixKitLocations.Gettext, "New")
-  defp page_title(:edit, location), do: location.name
+  # Rendered by the PhoenixKit admin header as "Locations / New location" or
+  # "Locations / <name> / Edit"; the page body has no header of its own. The
+  # location crumb is text: the list is the record's only page (the Structure
+  # tab is a sibling of this one, not the record's page).
+  defp page_title(:new), do: gettext_with_backend(PhoenixKitLocations.Gettext, "New location")
+  defp page_title(:edit), do: gettext_with_backend(PhoenixKitLocations.Gettext, "Edit")
+
+  defp page_crumbs(:new, _location), do: []
+  defp page_crumbs(:edit, location), do: [%{label: location.name}]
 
   # Keeps the `:changeset` assign (for `<.translatable_field>`) and `:form`
   # (for core `<.input>` / `<.select>` / `<.textarea>` which want a
@@ -359,7 +366,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp save_location(socket, :edit, params), do: update_location(socket, params)
 
   defp create_location(socket, params) do
-    case Locations.create_location(params, actor_opts(socket) ++ owner_opts(socket)) do
+    case Locations.create_location(params, Actor.opts(socket) ++ owner_opts(socket)) do
       {:ok, location} ->
         location_folder = Attachments.state(socket, location_scope()).folder_uuid
 
@@ -367,7 +374,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
           Attachments.maybe_rename_pending_folder_for(
             location_folder,
             location,
-            actor_opts(socket)[:actor_uuid]
+            Actor.opts(socket)[:actor_uuid]
           )
 
         sync_types_and_redirect(socket, location.uuid, gettext("Location created."))
@@ -386,7 +393,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
          |> push_navigate(to: Paths.index())}
 
       current ->
-        case Locations.update_location(current, params, actor_opts(socket)) do
+        case Locations.update_location(current, params, Actor.opts(socket)) do
           {:ok, location} ->
             socket
             |> maybe_apply_owner(location)
@@ -411,7 +418,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
     if not manage_all?(socket) or owner_uuid == location.owner_uuid do
       socket
     else
-      case Locations.set_location_owner(location, owner_uuid, actor_opts(socket)) do
+      case Locations.set_location_owner(location, owner_uuid, Actor.opts(socket)) do
         {:ok, _location} -> socket
         {:error, _changeset} -> put_flash(socket, :warning, Errors.message(:owner_update_failed))
       end
@@ -436,7 +443,7 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
   defp sync_types_and_redirect(socket, location_uuid, message) do
     type_uuids = MapSet.to_list(socket.assigns.linked_type_uuids)
 
-    case Locations.sync_location_types(location_uuid, type_uuids, actor_opts(socket)) do
+    case Locations.sync_location_types(location_uuid, type_uuids, Actor.opts(socket)) do
       {:ok, _sync_state} ->
         {:noreply,
          socket
@@ -778,13 +785,6 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
       {render_slot(@inner_block)}
     </h2>
     """
-  end
-
-  defp actor_opts(socket) do
-    case socket.assigns[:phoenix_kit_current_scope] do
-      %{user: %{uuid: uuid}} -> [actor_uuid: uuid]
-      _ -> []
-    end
   end
 
   # Every security decision reads the LIVE scope, never the mount-time `@mode`.

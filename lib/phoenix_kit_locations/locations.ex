@@ -10,10 +10,9 @@ defmodule PhoenixKitLocations.Locations do
   ## Activity logging
 
   Every mutating function accepts `opts \\ []`. When `actor_uuid:` is
-  present in opts, the mutation is logged via `PhoenixKit.Activity.log/1`
+  present in opts, the mutation is logged via `PhoenixKit.Activity.log/3`
   under the `"locations"` module key. Logging failures never crash the
-  primary operation — the helper rescues and falls back to
-  `Logger.warning`.
+  primary operation — core logs them and returns them.
 
   ## Usage from IEx
 
@@ -293,11 +292,49 @@ defmodule PhoenixKitLocations.Locations do
   @spec update_location(Location.t(), map(), opts) ::
           {:ok, Location.t()} | {:error, Ecto.Changeset.t()}
   def update_location(%Location{} = location, attrs, opts \\ []) do
-    location
-    |> Location.changeset(attrs)
-    |> repo().update()
+    repo().transaction(fn ->
+      stored = lock_row(Location, location.uuid)
+
+      location
+      |> Location.changeset(keep_folder_pointer(attrs, stored))
+      |> repo().update()
+      |> ok_or_rollback()
+    end)
     |> log_activity("location.updated", "location", opts, &location_metadata/1)
   end
+
+  @doc false
+  # A record's files folder is claimed outside its form, and written the
+  # moment it is claimed (`ResourceFolders.write_pointer/4`) — possibly
+  # from another session after this form was opened — while the form saves
+  # `data` whole, with the pointer as it was when the form opened. So a
+  # stored pointer always wins (read under the row's lock, so a claim
+  # cannot land in between): dropping or replacing it would leave the
+  # claimed folder unclaimed, for a same-named record to adopt. Only a
+  # record with none takes the form's.
+  @spec keep_folder_pointer(map(), map() | nil) :: map()
+  def keep_folder_pointer(attrs, %{data: %{"files_folder_uuid" => folder}})
+      when is_binary(folder) do
+    Enum.reduce(["data", :data], attrs, fn key, acc ->
+      case acc do
+        %{^key => %{} = data} ->
+          Map.put(acc, key, Map.put(data, "files_folder_uuid", folder))
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  def keep_folder_pointer(attrs, _stored), do: attrs
+
+  @doc false
+  @spec lock_row(module(), String.t()) :: struct() | nil
+  def lock_row(schema, uuid),
+    do: repo().one(from(r in schema, where: r.uuid == ^uuid, lock: "FOR UPDATE"))
+
+  defp ok_or_rollback({:ok, record}), do: record
+  defp ok_or_rollback({:error, changeset}), do: repo().rollback(changeset)
 
   @doc "Hard-deletes a location. Cascades to type assignments."
   @spec delete_location(Location.t(), opts) :: {:ok, Location.t()} | {:error, Ecto.Changeset.t()}
@@ -676,34 +713,17 @@ defmodule PhoenixKitLocations.Locations do
 
   defp log_activity({:error, _} = err, _action, _resource_type, _opts, _metadata_fun), do: err
 
-  # Low-level: fire-and-forget log, guarded so it never crashes callers.
+  # Low-level: fire-and-forget log; core never raises, so it never crashes callers.
   defp maybe_log_activity(action, resource_type, resource_uuid, opts, metadata) do
-    if Code.ensure_loaded?(PhoenixKit.Activity) do
-      PhoenixKit.Activity.log(%{
-        action: action,
-        module: "locations",
-        mode: Keyword.get(opts, :mode, "manual"),
-        actor_uuid: Keyword.get(opts, :actor_uuid),
-        resource_type: resource_type,
-        resource_uuid: resource_uuid,
-        metadata: metadata
-      })
-    end
+    PhoenixKit.Activity.log("locations", action,
+      mode: Keyword.get(opts, :mode, "manual"),
+      actor_uuid: Keyword.get(opts, :actor_uuid),
+      resource_type: resource_type,
+      resource_uuid: resource_uuid,
+      metadata: metadata
+    )
 
     :ok
-  rescue
-    e in Postgrex.Error ->
-      # Host hasn't run core's activity migration — swallow silently.
-      if match?(%{postgres: %{code: :undefined_table}}, e) do
-        :ok
-      else
-        Logger.warning("[Locations] Activity log failed: #{Exception.message(e)}")
-        :ok
-      end
-
-    e ->
-      Logger.warning("[Locations] Activity log error: #{Exception.message(e)}")
-      :ok
   end
 
   defp struct_uuid(record, _mod), do: Map.get(record, :uuid)

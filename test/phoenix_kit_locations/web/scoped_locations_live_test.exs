@@ -127,7 +127,7 @@ defmodule PhoenixKitLocations.Web.ScopedLocationsLiveTest do
     test "renders without the owner card, Files card or internal notes", %{conn: conn} do
       {:ok, view, html} = live(conn, Paths.location_new())
 
-      assert has_element?(view, "#header-title", "New")
+      assert has_element?(view, "#header-title", "New location")
       refute has_element?(view, "#location-owner-card")
       refute has_element?(view, "textarea[name='location[notes]']")
       refute html =~ "Floor plans, brochures"
@@ -201,7 +201,8 @@ defmodule PhoenixKitLocations.Web.ScopedLocationsLiveTest do
       mine = owned_location(user, %{name: "Before"})
 
       {:ok, view, html} = live(conn, Paths.location_edit(mine.uuid))
-      assert html =~ ~s(id="header-title">Before<)
+      assert has_element?(view, "span.header-crumb", "Before")
+      assert has_element?(view, "#header-title", "Edit")
       assert has_element?(view, ~s(a[href="#{Paths.location_structure(mine.uuid)}"]))
 
       assert {:error, {:live_redirect, %{to: to}}} =

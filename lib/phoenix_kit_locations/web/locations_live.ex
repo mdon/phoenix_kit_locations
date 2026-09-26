@@ -22,6 +22,7 @@ defmodule PhoenixKitLocations.Web.LocationsLive do
   alias PhoenixKitLocations.Locations
   alias PhoenixKitLocations.Paths
   alias PhoenixKitLocations.Policy
+  alias PhoenixKitWeb.Actor
 
   @impl true
   def mount(_params, _session, socket) do
@@ -232,11 +233,11 @@ defmodule PhoenixKitLocations.Web.LocationsLive do
   end
 
   defp delete_for_kind(:location, record, socket) do
-    Locations.delete_location(record, actor_opts(socket))
+    Locations.delete_location(record, Actor.opts(socket))
   end
 
   defp delete_for_kind(:location_type, record, socket) do
-    Locations.delete_location_type(record, actor_opts(socket))
+    Locations.delete_location_type(record, Actor.opts(socket))
   end
 
   defp deleted_message(:location), do: gettext("Location deleted.")
@@ -250,13 +251,6 @@ defmodule PhoenixKitLocations.Web.LocationsLive do
 
   defp reload_action(:location), do: :index
   defp reload_action(:location_type), do: :types
-
-  defp actor_opts(socket) do
-    case socket.assigns[:phoenix_kit_current_scope] do
-      %{user: %{uuid: uuid}} -> [actor_uuid: uuid]
-      _ -> []
-    end
-  end
 
   # ── Render ──────────────────────────────────────────────────────
 

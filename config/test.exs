@@ -49,7 +49,11 @@ config :phoenix_kit_locations, PhoenixKitLocations.Test.Endpoint,
   live_view: [signing_salt: "locations-test-salt"],
   server: false,
   url: [host: "localhost"],
-  render_errors: [formats: [html: PhoenixKitLocations.Test.Layouts]]
+  render_errors: [formats: [html: PhoenixKitLocations.Test.Layouts]],
+  # Phoenix.LiveViewTest's UploadClient joins the upload channel through
+  # the endpoint's PubSub (`file_input/4` + `render_upload/3`). A server of
+  # its own, so no module broadcast reaches the test endpoint.
+  pubsub_server: PhoenixKitLocations.Test.PubSub
 
 config :phoenix, :json_library, Jason
 

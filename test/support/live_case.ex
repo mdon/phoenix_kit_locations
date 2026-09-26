@@ -120,6 +120,15 @@ defmodule PhoenixKitLocations.LiveCase do
     Plug.Test.init_test_session(conn, %{"phoenix_kit_test_scope" => scope})
   end
 
+  @doc """
+  Views the page in `dialect` (e.g. `"fr-FR"`), as production's locale hook
+  would for a `/fr/…` URL: `Multilang.current_locale/0` answers it inside
+  the LiveView.
+  """
+  def with_request_locale(conn, dialect) do
+    Plug.Test.init_test_session(conn, %{"pk_test_request_locale" => dialect})
+  end
+
   @doc "Creates a LocationType fixture with a unique name."
   def fixture_location_type(attrs \\ %{}) do
     {:ok, type} =

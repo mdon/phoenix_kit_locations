@@ -16,14 +16,16 @@ defmodule PhoenixKitLocations.Spaces do
 
   Direct self-loop is caught by the schema changeset. Indirect cycles
   (A → B → A) are blocked here in `validate_no_cycle/3` before any
-  `parent_uuid` change is persisted. Walk-up depth-limited to 64 hops —
-  generous for any realistic building hierarchy.
+  `parent_uuid` change is persisted: the new parent's ancestors come from
+  one recursive query (`PhoenixKit.Utils.TreeQuery`, no depth cap), read
+  under the location's tree lock, so two re-parents in opposite
+  directions cannot both pass.
 
   ## Activity logging
 
   Mutating functions accept `opts \\ []` and forward `:actor_uuid`
-  for the activity log. Guarded with `Code.ensure_loaded?(PhoenixKit.Activity)` and
-  rescued so logging never crashes the mutation.
+  for the activity log, written through core's `PhoenixKit.Activity.log/3`,
+  which never raises — logging never crashes the mutation.
 
   Parity with `Locations`:
   - `{:ok, space}` — logs with space metadata, same as `Locations`.
@@ -35,16 +37,14 @@ defmodule PhoenixKitLocations.Spaces do
 
   import Ecto.Query, warn: false
 
-  require Logger
-
   alias PhoenixKit.Utils.Multilang
+  alias PhoenixKit.Utils.TreeQuery
+  alias PhoenixKitLocations.Locations
   alias PhoenixKitLocations.Schemas.Location
   alias PhoenixKitLocations.Schemas.Space
 
   @type opts :: keyword()
   @type uuid :: String.t()
-
-  @max_cycle_walk 64
 
   defp repo, do: PhoenixKit.RepoHelper.repo()
 
@@ -133,7 +133,7 @@ defmodule PhoenixKitLocations.Spaces do
   """
   @spec count_descendants(uuid) :: non_neg_integer()
   def count_descendants(space_uuid) when is_binary(space_uuid) do
-    space_uuid |> descendant_uuids() |> length()
+    Space |> TreeQuery.descendant_uuids(space_uuid) |> length()
   end
 
   # ═══════════════════════════════════════════════════════════════════
@@ -183,16 +183,56 @@ defmodule PhoenixKitLocations.Spaces do
              | :location_not_found
              | :cycle}
   def update_space(%Space{} = space, attrs, opts \\ []) do
-    attrs = Map.put_new(attrs, "location_uuid", space.location_uuid)
+    attrs = own_location(attrs, space.location_uuid)
 
     with :ok <- validate_parent_location(attrs),
-         :ok <-
-           validate_no_cycle(space.uuid, fetch_attr(attrs, :parent_uuid), space.location_uuid) do
-      space
-      |> Space.changeset(attrs)
-      |> repo().update()
-      |> log_activity("space.updated", "location_space", opts, &space_metadata/1)
+         {:ok, _} = result <- repo().transaction(fn -> locked_update(space, attrs) end) do
+      log_activity(result, "space.updated", "location_space", opts, &space_metadata/1)
+    else
+      {:error, %Ecto.Changeset{}} = error ->
+        log_activity(error, "space.updated", "location_space", opts, &space_metadata/1)
+
+      error ->
+        error
     end
+  end
+
+  # A re-parent takes the location's tree lock first, so its cycle check
+  # reads the chain after any other re-parent there has committed — two at
+  # once in opposite directions otherwise both passed and committed a loop.
+  # The row lock keeps the stored folder pointer a save does not name
+  # (`Locations.keep_folder_pointer/2`).
+  defp locked_update(space, attrs) do
+    parent = fetch_attr(attrs, :parent_uuid)
+    # Any change of parent, a move to the top level included: it closes no
+    # cycle, but it must not slip past the lock the other tree writers hold.
+    if reparenting?(space, attrs), do: lock_tree(space.location_uuid)
+    stored = Locations.lock_row(Space, space.uuid)
+
+    with :ok <- validate_no_cycle(space.uuid, parent, space.location_uuid),
+         {:ok, updated} <-
+           space
+           |> Space.changeset(Locations.keep_folder_pointer(attrs, stored))
+           |> repo().update() do
+      updated
+    else
+      {:error, reason} -> repo().rollback(reason)
+    end
+  end
+
+  defp reparenting?(%Space{parent_uuid: current}, attrs) do
+    if Map.has_key?(attrs, "parent_uuid") or Map.has_key?(attrs, :parent_uuid),
+      do: normalize_parent(fetch_attr(attrs, :parent_uuid)) != normalize_parent(current),
+      else: false
+  end
+
+  defp normalize_parent(parent) when parent in [nil, ""], do: nil
+  defp normalize_parent(parent), do: to_string(parent)
+
+  defp lock_tree(location_uuid) do
+    repo().query!("SELECT pg_advisory_xact_lock(hashtext($1))", [
+      "phoenix_kit_locations:spaces:#{location_uuid}"
+    ])
   end
 
   @doc """
@@ -337,6 +377,17 @@ defmodule PhoenixKitLocations.Spaces do
     )
   end
 
+  # A space stays in its location: one sent with an update (a crafted form
+  # field) would move it out of its tree and leave its children behind.
+  # Written in the key shape `attrs` already uses — cast refuses a mix.
+  defp own_location(attrs, location_uuid) do
+    attrs = Map.drop(attrs, [:location_uuid, "location_uuid"])
+
+    if Enum.any?(Map.keys(attrs), &is_atom/1),
+      do: Map.put(attrs, :location_uuid, location_uuid),
+      else: Map.put(attrs, "location_uuid", location_uuid)
+  end
+
   # `attrs` may arrive string-keyed (form params) or atom-keyed (internal
   # callers); read either so parent/cycle checks never silently skip on a
   # key-shape mismatch.
@@ -366,23 +417,12 @@ defmodule PhoenixKitLocations.Spaces do
        when space_uuid == new_parent_uuid,
        do: {:error, :cycle}
 
-  defp validate_no_cycle(space_uuid, new_parent_uuid, location_uuid) do
-    walk_ancestors(space_uuid, new_parent_uuid, location_uuid, @max_cycle_walk)
-  end
-
-  defp walk_ancestors(_target, _cursor, _location, 0), do: {:error, :cycle}
-
-  defp walk_ancestors(target, cursor, location, hops_remaining) do
-    case repo().one(
-           from(s in Space,
-             where: s.uuid == ^cursor and s.location_uuid == ^location,
-             select: s.parent_uuid
-           )
-         ) do
-      nil -> :ok
-      ^target -> {:error, :cycle}
-      next -> walk_ancestors(target, next, location, hops_remaining - 1)
-    end
+  # The new parent's ancestors in one recursive query (no depth cap: the
+  # old walk stopped at 64 hops and called any deeper chain a cycle).
+  defp validate_no_cycle(space_uuid, new_parent_uuid, _location_uuid) do
+    if space_uuid in TreeQuery.ancestor_uuids(Space, new_parent_uuid),
+      do: {:error, :cycle},
+      else: :ok
   end
 
   # ═══════════════════════════════════════════════════════════════════
@@ -390,36 +430,18 @@ defmodule PhoenixKitLocations.Spaces do
   # ═══════════════════════════════════════════════════════════════════
 
   # Ancestors of `space`, ordered root → direct parent. `[]` when
-  # `space` is already a root (`parent_uuid == nil`) — skips the CTE
-  # entirely in the common case. Mirrors
-  # `PhoenixKitCatalogue.Catalogue.Tree.ancestor_uuids/1` +
-  # `ancestors_in_order/1` + `walk_up/3`: one recursive CTE walking
-  # `parent_uuid` up from `space`, `UNION` (not `UNION ALL`) so a
-  # corrupted/cyclic chain can't spin forever — Postgres drops rows
-  # already seen in the working table before the next iteration.
+  # `space` is already a root (`parent_uuid == nil`) — skips the query
+  # entirely in the common case. One recursive query
+  # (`PhoenixKit.Utils.TreeQuery`, cycle-safe) for the uuids, one read for
+  # the rows, then `walk_up/3` puts them in order.
   defp ancestors_in_order(%Space{parent_uuid: nil}), do: []
 
   defp ancestors_in_order(%Space{} = space) do
-    case ancestor_uuids(space.uuid) do
+    case TreeQuery.ancestor_uuids(Space, space.uuid) do
       [] ->
         []
 
-      raw_uuids ->
-        # The CTE's outer select in `ancestor_uuids/1` is schema-less
-        # (`select: t.uuid` off a `with_cte` fragment) — Ecto has no
-        # field type to `load/1` each row through, so it comes back as
-        # the raw 16-byte binary Postgrex decoded off the wire, not
-        # the textual form every loaded `%Space{}.uuid` carries.
-        # Re-querying `Space` with these raw values directly in
-        # `where: s.uuid in ^raw_uuids` would fail:
-        # `Ecto.Type.dump(UUIDv7, <<16 raw bytes>>)` returns `:error`
-        # (`UUIDv7.dump/1` delegates to `Ecto.UUID.dump/1`, which only
-        # accepts the 36-char textual form). Normalise to text first —
-        # same fix `PhoenixKitCatalogue.Catalogue` applies at every
-        # other call site that reuses a Tree CTE's raw-uuid output
-        # (its `load_uuid/1`).
-        uuids = Enum.map(raw_uuids, &load_uuid/1)
-
+      uuids ->
         by_uuid =
           from(s in Space, where: s.uuid in ^uuids)
           |> repo().all()
@@ -427,34 +449,6 @@ defmodule PhoenixKitLocations.Spaces do
 
         walk_up(space.parent_uuid, by_uuid, [])
     end
-  end
-
-  # Recursive CTE returning every ancestor uuid of `uuid` (raw 16-byte
-  # binaries — see `ancestors_in_order/1`), walking up the self-ref
-  # `parent_uuid` chain. Excludes `uuid` itself.
-  defp ancestor_uuids(uuid) do
-    initial =
-      from(s in Space,
-        where: s.uuid == type(^uuid, UUIDv7),
-        select: %{uuid: s.uuid, parent_uuid: s.parent_uuid}
-      )
-
-    recursion =
-      from(s in Space,
-        join: t in "space_ancestor_tree",
-        on: s.uuid == t.parent_uuid,
-        select: %{uuid: s.uuid, parent_uuid: s.parent_uuid}
-      )
-
-    cte = union(initial, ^recursion)
-
-    from(t in "space_ancestor_tree",
-      where: t.uuid != type(^uuid, UUIDv7),
-      select: t.uuid
-    )
-    |> recursive_ctes(true)
-    |> with_cte("space_ancestor_tree", as: ^cte)
-    |> repo().all()
   end
 
   # Walks `by_uuid` from `uuid` up to the root, prepending each node as
@@ -467,56 +461,6 @@ defmodule PhoenixKitLocations.Spaces do
       %Space{parent_uuid: parent_uuid} = s -> walk_up(parent_uuid, by_uuid, [s | acc])
       nil -> acc
     end
-  end
-
-  # Loads a raw 16-byte binary UUID (from the ancestor CTE) back into
-  # the textual `xxxxxxxx-xxxx-...` form so it can be used in a normal
-  # typed `Space` query. Falls back to the raw input on failure —
-  # defensive only, `ancestor_uuids/1`'s output is always a valid
-  # binary UUID in practice.
-  defp load_uuid(raw) do
-    case Ecto.UUID.load(raw) do
-      {:ok, str} -> str
-      :error -> raw
-    end
-  end
-
-  # ═══════════════════════════════════════════════════════════════════
-  # Internals — descendant counting (count_descendants/1)
-  # ═══════════════════════════════════════════════════════════════════
-
-  # Every descendant uuid of `uuid` (raw 16-byte binaries, same shape
-  # `ancestor_uuids/1` returns — `count_descendants/1` only calls
-  # `length/1` on the result, so no textual normalisation is needed
-  # here). Mirrors `ancestor_uuids/1` with the join direction reversed
-  # (`s.parent_uuid == t.uuid` walks *down* instead of `s.uuid ==
-  # t.parent_uuid` walking up) and the same `UNION` (not `UNION ALL`)
-  # cycle safety — Postgres drops rows already seen in the working
-  # table before the next iteration, so a corrupted/cyclic chain still
-  # terminates. Excludes `uuid` itself.
-  defp descendant_uuids(uuid) do
-    initial =
-      from(s in Space,
-        where: s.uuid == type(^uuid, UUIDv7),
-        select: %{uuid: s.uuid}
-      )
-
-    recursion =
-      from(s in Space,
-        join: t in "space_descendant_tree",
-        on: s.parent_uuid == t.uuid,
-        select: %{uuid: s.uuid}
-      )
-
-    cte = union(initial, ^recursion)
-
-    from(t in "space_descendant_tree",
-      where: t.uuid != type(^uuid, UUIDv7),
-      select: t.uuid
-    )
-    |> recursive_ctes(true)
-    |> with_cte("space_descendant_tree", as: ^cte)
-    |> repo().all()
   end
 
   # Resolves a translated `name` for a Location or Space (any map or
@@ -594,31 +538,15 @@ defmodule PhoenixKitLocations.Spaces do
   end
 
   defp maybe_log_activity(action, resource_type, resource_uuid, opts, metadata) do
-    if Code.ensure_loaded?(PhoenixKit.Activity) do
-      PhoenixKit.Activity.log(%{
-        action: action,
-        module: "locations",
-        mode: Keyword.get(opts, :mode, "manual"),
-        actor_uuid: Keyword.get(opts, :actor_uuid),
-        resource_type: resource_type,
-        resource_uuid: resource_uuid,
-        metadata: metadata
-      })
-    end
+    PhoenixKit.Activity.log("locations", action,
+      mode: Keyword.get(opts, :mode, "manual"),
+      actor_uuid: Keyword.get(opts, :actor_uuid),
+      resource_type: resource_type,
+      resource_uuid: resource_uuid,
+      metadata: metadata
+    )
 
     :ok
-  rescue
-    e in Postgrex.Error ->
-      if match?(%{postgres: %{code: :undefined_table}}, e) do
-        :ok
-      else
-        Logger.warning("[Spaces] Activity log failed: #{Exception.message(e)}")
-        :ok
-      end
-
-    e ->
-      Logger.warning("[Spaces] Activity log error: #{Exception.message(e)}")
-      :ok
   end
 
   defp space_metadata(%Space{} = s) do

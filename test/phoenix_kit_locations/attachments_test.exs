@@ -141,9 +141,9 @@ defmodule PhoenixKitLocations.AttachmentsTest do
                "Upload error: :weird_atom"
     end
 
-    test "tuple shapes are inspected" do
-      assert Attachments.upload_error_message({:weird, :tuple}) ==
-               "Upload error: {:weird, :tuple}"
+    test "a tuple names its tag, never its data" do
+      assert Attachments.upload_error_message({:weird, "s3://bucket/secret"}) ==
+               "Upload error: :weird (details omitted)"
     end
   end
 end

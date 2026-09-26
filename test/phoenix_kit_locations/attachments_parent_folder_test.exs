@@ -21,6 +21,10 @@ defmodule PhoenixKitLocations.AttachmentsParentFolderTest do
     def parent(_kind, _actor, _resource), do: {:ok, Process.get(:locations)}
   end
 
+  defmodule ExitingHook do
+    def parent(_kind, _actor, _resource), do: exit({:timeout, {GenServer, :call, [:media]}})
+  end
+
   defmodule RaisingHook do
     def parent(_kind, _actor, _resource), do: raise("host lookup down")
     def name(_resource, _actor), do: raise("host lookup down")
@@ -196,5 +200,58 @@ defmodule PhoenixKitLocations.AttachmentsParentFolderTest do
       assert Attachments.parent_folder_uuid(loc, nil) == nil
       assert Attachments.folder_name(loc, nil) == "location-#{loc.uuid}"
     end)
+  end
+
+  test "an exiting parent hook degrades to the root instead of taking the page down" do
+    Application.put_env(
+      :phoenix_kit_locations,
+      :attachments_parent_folder,
+      {ExitingHook, :parent}
+    )
+
+    loc = %Location{uuid: Ecto.UUID.generate(), name: "Tallinn"}
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      assert Attachments.parent_folder_uuid(loc, nil) == nil
+    end)
+  end
+
+  test "a trashed folder is never found again" do
+    loc = owned_location("Tallinn", nil)
+    {:ok, folder} = Storage.create_folder(%{name: "location-#{loc.uuid}"})
+    assert Attachments.find_resource_folder(loc, nil).uuid == folder.uuid
+
+    {:ok, _} = Storage.trash_folder(folder)
+    assert Attachments.find_resource_folder(loc, nil) == nil
+  end
+
+  test "a stored pointer to a folder trashed since is replaced when files are next added" do
+    {:ok, trashed} = Storage.create_folder(%{name: "location-old-#{System.unique_integer()}"})
+    {:ok, _} = Storage.trash_folder(trashed)
+    loc = owned_location("Tallinn", trashed.uuid)
+
+    {:noreply, socket} = Attachments.open_featured_image_picker(socket_for(loc), "location")
+
+    folder_uuid = Attachments.state(socket, "location").folder_uuid
+    refute folder_uuid == trashed.uuid
+    assert Repo.get!(Folder, folder_uuid).name == "location-#{loc.uuid}"
+  end
+
+  test "opening the picker records the folder as the location's at once, before any Save",
+       %{locations: l} do
+    hooks_on()
+    first = owned_location("Warehouse", nil)
+    second = owned_location("Warehouse", nil)
+
+    {:noreply, socket} = Attachments.open_featured_image_picker(socket_for(first), "location")
+    folder_uuid = Attachments.state(socket, "location").folder_uuid
+    assert Repo.get!(Folder, folder_uuid).name == "Warehouse"
+    assert Repo.get!(Location, first.uuid).data["files_folder_uuid"] == folder_uuid
+
+    {:noreply, other} = Attachments.open_featured_image_picker(socket_for(second), "location")
+    other_uuid = Attachments.state(other, "location").folder_uuid
+    refute other_uuid == folder_uuid
+    assert %{name: "location-" <> _, parent_uuid: parent} = Repo.get!(Folder, other_uuid)
+    assert parent == l.uuid
   end
 end

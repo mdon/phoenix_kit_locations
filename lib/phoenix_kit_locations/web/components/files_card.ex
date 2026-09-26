@@ -114,11 +114,11 @@ defmodule PhoenixKitLocations.Web.Components.FilesCard do
       <p class="text-xs text-base-content/50">{@files_subtitle}</p>
     </div>
 
-    <%!-- Dropzone: phx-click covers the click path; the colocated JS
-         hook below sets the scope on `dragenter` so drag-and-drop
-         uploads route to the right folder without requiring a prior
-         click. The label also forwards clicks to the hidden
-         <input type=file>. --%>
+    <%!-- Dropzone: phx-click covers the click path; the hook
+         (`priv/static/assets/phoenix_kit_locations.js`) sets the scope on
+         `dragenter` so drag-and-drop uploads route to the right folder
+         without a prior click. The label also forwards clicks to the
+         hidden <input type=file>. --%>
     <label
       id={"pk-locations-dropzone-#{@scope}"}
       for={@uploads.attachment_files.ref}
@@ -126,7 +126,7 @@ defmodule PhoenixKitLocations.Web.Components.FilesCard do
       phx-click="set_active_upload_scope"
       phx-value-scope={@scope}
       phx-drop-target={@uploads.attachment_files.ref}
-      phx-hook=".PkLocationsUploadScope"
+      phx-hook="PhoenixKitLocationsUploadScope"
       data-scope={@scope}
     >
       <.icon name="hero-cloud-arrow-up" class="w-8 h-8 text-base-content/40" />
@@ -223,27 +223,6 @@ defmodule PhoenixKitLocations.Web.Components.FilesCard do
       </ul>
     <% end %>
 
-    <%!-- Tiny JS hook that pushes `set_active_upload_scope` on
-         `dragenter` so drag-and-drop uploads route to the right
-         folder even when the user hasn't clicked the dropzone first.
-         Colocated so it compiles into the shared JS manifest once and
-         is automatically available to any LiveView rendering
-         `<.files_card_body>`. --%>
-    <script :type={Phoenix.LiveView.ColocatedHook} name=".PkLocationsUploadScope">
-      export default {
-        mounted() {
-          const push = () => {
-            const scope = this.el.dataset.scope;
-            if (scope) this.pushEvent("set_active_upload_scope", { scope: scope });
-          };
-          // `dragenter` fires when a file is dragged INTO the dropzone
-          // — well before the actual `drop` event the upload listens
-          // for. By the time the drop hits, the server has already
-          // received the scope and set `:active_upload_scope`.
-          this.el.addEventListener("dragenter", push);
-        }
-      }
-    </script>
     """
   end
 end
