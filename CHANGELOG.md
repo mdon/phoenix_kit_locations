@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.6.0 - 2026-09-26
+
+### Changed
+
+- Requires `phoenix_kit >= 2.38.0 and < 3.0.0`. Actor resolution, activity
+  logging, space tree queries, resource folders, uploads, file icons/sizes, the
+  media reorganizer and the edit-language tabs now run on core's shared
+  toolkits instead of module copies.
+- The dropzone hook ships as a prebuilt bundle declared by `js_sources/0`, so a
+  host no longer has to import the module's colocated hooks.
+- Admin header shapes: "Locations / New location", "Locations / <name> / Edit",
+  "Locations / <name> / Structure", "Locations / Types / New type" and
+  "Locations / Types / <name> / Edit".
+- The location and location-type edit forms open on the viewing language.
+- `update_location/3` returns `{:error, :location_not_found}` and
+  `update_space/3` returns `{:error, :space_not_found}` for a record deleted
+  since the caller loaded it, instead of raising `Ecto.StaleEntryError`.
+
+### Fixed
+
+- Two opposite space re-parents at once could both pass the cycle check and
+  commit a loop. A re-parent (a move to the top level included) now holds the
+  location's tree lock. The cycle check no longer calls a chain deeper than
+  64 levels a cycle.
+- A space update carrying another `location_uuid` could move it out of its
+  location and strand its children.
+- A save could drop or replace a files folder claimed while the form was open.
+- The files card's drag-and-drop hook never reached a host that did not
+  import colocated hooks.
+- An upload that could not be filed stayed in the list at 100% and counted
+  against the upload limit.
+- A byte-identical re-upload now shows a notice instead of silently adding
+  nothing.
+- Saving a space or location deleted in another session crashed the page.
+
 ## 0.5.3 - 2026-09-16
 
 ### Changed

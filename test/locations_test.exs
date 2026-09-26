@@ -207,6 +207,12 @@ defmodule PhoenixKitLocations.LocationsTest do
       assert updated.name == "Updated"
     end
 
+    test "update_location/3 on a location deleted since it was loaded returns :location_not_found" do
+      l = create_location()
+      assert {:ok, _} = Locations.delete_location(l)
+      assert {:error, :location_not_found} = Locations.update_location(l, %{name: "Updated"})
+    end
+
     test "delete_location/1" do
       l = create_location()
       assert {:ok, _} = Locations.delete_location(l)

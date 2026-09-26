@@ -399,8 +399,15 @@ defmodule PhoenixKitLocations.Web.LocationFormLive do
             |> maybe_apply_owner(location)
             |> sync_types_and_redirect(location.uuid, gettext("Location updated."))
 
-          {:error, changeset} ->
+          {:error, %Ecto.Changeset{} = changeset} ->
             {:noreply, assign_form(socket, Map.put(changeset, :action, :validate))}
+
+          # Deleted in the moment between the re-read above and the save.
+          {:error, reason} ->
+            {:noreply,
+             socket
+             |> put_flash(:error, Errors.message(reason))
+             |> push_navigate(to: Paths.index())}
         end
     end
   end

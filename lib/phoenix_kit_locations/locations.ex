@@ -288,17 +288,26 @@ defmodule PhoenixKitLocations.Locations do
     |> log_activity("location.created", "location", opts, &location_metadata/1)
   end
 
-  @doc "Updates a location with the given attributes. Never changes the owner — see `set_location_owner/3`."
+  @doc """
+  Updates a location with the given attributes. Never changes the owner — see
+  `set_location_owner/3`. A location deleted since the caller loaded it comes
+  back as `{:error, :location_not_found}`.
+  """
   @spec update_location(Location.t(), map(), opts) ::
-          {:ok, Location.t()} | {:error, Ecto.Changeset.t()}
+          {:ok, Location.t()} | {:error, Ecto.Changeset.t() | :location_not_found}
   def update_location(%Location{} = location, attrs, opts \\ []) do
     repo().transaction(fn ->
-      stored = lock_row(Location, location.uuid)
+      case lock_row(Location, location.uuid) do
+        # Refused rather than raised as a stale update.
+        nil ->
+          repo().rollback(:location_not_found)
 
-      location
-      |> Location.changeset(keep_folder_pointer(attrs, stored))
-      |> repo().update()
-      |> ok_or_rollback()
+        stored ->
+          location
+          |> Location.changeset(keep_folder_pointer(attrs, stored))
+          |> repo().update()
+          |> ok_or_rollback()
+      end
     end)
     |> log_activity("location.updated", "location", opts, &location_metadata/1)
   end

@@ -172,12 +172,14 @@ defmodule PhoenixKitLocations.Spaces do
   @doc """
   Updates an existing space. Re-parenting is allowed but rejected if
   the new parent lives in another Location, or if the change would
-  create a cycle.
+  create a cycle. A space deleted since the caller loaded it comes back
+  as `{:error, :space_not_found}`.
   """
   @spec update_space(Space.t(), map(), opts) ::
           {:ok, Space.t()}
           | {:error,
              Ecto.Changeset.t()
+             | :space_not_found
              | :parent_in_other_location
              | :parent_not_found
              | :location_not_found
@@ -209,7 +211,10 @@ defmodule PhoenixKitLocations.Spaces do
     if reparenting?(space, attrs), do: lock_tree(space.location_uuid)
     stored = Locations.lock_row(Space, space.uuid)
 
-    with :ok <- validate_no_cycle(space.uuid, parent, space.location_uuid),
+    # Gone since the caller loaded it (another session's delete, or its
+    # parent's cascade): refused rather than raised as a stale update.
+    with %Space{} <- stored || {:error, :space_not_found},
+         :ok <- validate_no_cycle(space.uuid, parent, space.location_uuid),
          {:ok, updated} <-
            space
            |> Space.changeset(Locations.keep_folder_pointer(attrs, stored))

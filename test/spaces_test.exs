@@ -520,6 +520,16 @@ defmodule PhoenixKitLocations.SpacesTest do
       assert Spaces.get_space(r1.uuid) == nil
       assert Spaces.get_space(r2.uuid).uuid == r2.uuid
     end
+
+    # Another session's delete (or its parent's cascade) lands while this
+    # page still holds the space: its save is refused, not raised.
+    test "updating a space deleted since it was loaded returns :space_not_found" do
+      location = create_location()
+      floor = create_space(location.uuid, %{"kind" => "floor", "name" => "Floor 1"})
+      assert {:ok, _} = Spaces.delete_space(floor)
+
+      assert {:error, :space_not_found} = Spaces.update_space(floor, %{"name" => "Renamed"})
+    end
   end
 
   # ═══════════════════════════════════════════════════════════════════
